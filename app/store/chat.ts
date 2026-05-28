@@ -42,7 +42,7 @@ import { extractMcpJson, isMcpJson } from "../mcp/utils";
 const localStorage = safeLocalStorage();
 // ==================== 专属大厨模式与 API 配置区 ====================
 
-// 1. Z-Image-Turbo 凭证配置（直接在这里填入你的接口信息）
+// 1. Z-Image-Turbo 凭证配置
 const Z_IMAGE_TURBO_KEY = "sk-skdheazwxwwqiojygsocsnkjtzdxuxgsljovfdlkpztyyhfg";
 const Z_IMAGE_TURBO_URL = "https://api.siliconflow.cn/v1/images/generations"; 
 
@@ -150,6 +150,77 @@ async function saveRecipeToMemory(dishName: string, fullContent: string): Promis
     });
   } catch (e) {
     console.error("[Chef Memory] 写入缓存失败:", e);
+  }
+}
+// ===================================================================
+
+// ==================== 专属大厨：Upstash 线上云数据库与统一加解密引擎 ====================
+
+// 1. 白嫖配置区
+const UPSTASH_REDIS_REST_URL ="https://alert-possum-79616.upstash.io";
+const UPSTASH_REDIS_REST_TOKEN = "gQAAAAAAATcAAAIgcDIzNzUwOGYwYjNhMTQ0NTc2OTVkMjU4NGNjZDlmMmIxZAN";
+
+// 2. 原生高效密码学：SHA-256 哈希计算（用于把用户密码转换成唯一的云端匿名 UserID）
+async function hashPassword(text: string): Promise<string> {
+  const msgBuffer = new TextEncoder().encode(text.trim());
+  const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// 3. 原生高级加密标准：AES-GCM 文本加密
+async function encryptText(text: string, password: string): Promise<string> {
+  const enc = new TextEncoder();
+  const pwHash = await crypto.subtle.digest("SHA-256", enc.encode(password));
+  const key = await crypto.subtle.importKey("raw", pwHash, { name: "AES-GCM" }, false, ["encrypt"]);
+  const iv = enc.encode(password.substring(0, 12).padStart(12, "0")); // 派生确定性IV简化存储
+  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, enc.encode(text));
+  return btoa(String.fromCharCode(...new Uint8Array(encrypted)));
+}
+
+// 4. 原生高级解密标准：AES-GCM 文本解密
+async function decryptText(cipherBase64: string, password: string): Promise<string> {
+  try {
+    const enc = new TextEncoder();
+    const pwHash = await crypto.subtle.digest("SHA-256", enc.encode(password));
+    const key = await crypto.subtle.importKey("raw", pwHash, { name: "AES-GCM" }, false, ["decrypt"]);
+    const iv = enc.encode(password.substring(0, 12).padStart(12, "0"));
+    const encryptedBytes = new Uint8Array(atob(cipherBase64).split("").map(c => c.charCodeAt(0)));
+    const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, encryptedBytes);
+    return new TextDecoder().decode(decrypted);
+  } catch (e) {
+    return "⚠️ [解密失败] 您的私钥/密码似乎不正确，无法读取历史偏好。";
+  }
+}
+
+// 5. 云端通用万能读接口 (HTTP REST)
+async function cloudDBGet(key: string): Promise<string | null> {
+  if (!UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_URL.includes("这里填入")) return null;
+  try {
+    const res = await fetch(`${UPSTASH_REDIS_REST_URL.replace(/\/$/, "")}/get/${encodeURIComponent(key)}`, {
+      headers: { Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}` }
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.result || null;
+  } catch (e) {
+    console.error("[CloudDB 故障]", e);
+    return null;
+  }
+}
+
+// 6. 云端通用万能写接口 (HTTP REST)
+async function cloudDBSet(key: string, value: string): Promise<boolean> {
+  if (!UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_URL.includes("这里填入")) return false;
+  try {
+    const res = await fetch(`${UPSTASH_REDIS_REST_URL.replace(/\/$/, "")}/set/${encodeURIComponent(key)}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}` },
+      body: value
+    });
+    return res.ok;
+  } catch (e) {
+    console.error("[CloudDB 写入故障]", e);
+    return false;
   }
 }
 // ===================================================================
@@ -525,8 +596,8 @@ export const useChatStore = createPersistStore(
         const session = get().currentSession();
         const modelConfig = session.mask.modelConfig;
 
-        // 1. 拦截器：检测关键词
-        const generateRegex = /^(G·|\/生成)\s*(.+)/i;
+        // 1. 超强指令解析器：支持剥离 【菜名描述】、【密码私钥】、【动态口味喜好】
+        const generateRegex = /^(G·|\/生成)\s*(.+?)(?:\s+(?:密码|key|p)[:：](\S+))?(?:\s+(?:偏好|喜好|pref)[:：](\S+))?$/i;
         const match = content.trim().match(generateRegex);
         
         const hasChefContext = session.messages.some(
@@ -535,26 +606,30 @@ export const useChatStore = createPersistStore(
         const isChefMode = !!match || hasChefContext;
 
         let cleanContent = content;
+        let userPassword = "";
+        let inlinePreference = "";
+
         if (match) {
-          cleanContent = match[2].trim(); // 提取干净的菜名
+          cleanContent = match[2].trim();     // 干净的菜名
+          userPassword = match[3] || "";     // 用户自记的私钥密码
+          inlinePreference = match[4] || ""; // 本次指定的临时/更新喜好
         }
 
-        // ============ 【核心逻辑】第三步：击中记忆拦截检查 ============
+        // ============ 【线上全通用设计】第一关：线上全局通用记忆拦截 ============
         if (match && isChefMode) {
-          const cachedMemory = await getRecipeFromMemory(cleanContent);
-          if (cachedMemory) {
-            console.log(`[Chef Memory] ⚡ 成功击中 【${cleanContent}】 的本地厨房记忆！正在免 Token 加载...`);
+          // 云端全局大统一：所有人或任意设备只要生成过这道菜，就可被瞬间通杀击中
+          const globalCloudMemory = await cloudDBGet(`chef:dish:${cleanContent.toLowerCase().trim()}`);
+          if (globalCloudMemory) {
+            console.log(`[Chef Cloud] ⚡ 线上云端数据库成功击中 【${cleanContent}】 的通用厨房记忆！`);
             
-            // 构建一条瞬间完成的消息
             const memoMessage = createMessage({
               role: "assistant",
-              content: cachedMemory.content,
+              content: globalCloudMemory,
               streaming: false,
               model: modelConfig.model,
               date: new Date().toLocaleString(),
             });
 
-            // 塞入历史记录，直接完工，全面阻断后面的大模型与生图网络调用
             get().updateTargetSession(session, (session) => {
               session.messages = session.messages.concat([
                 createMessage({ role: "user", content: content }),
@@ -562,10 +637,10 @@ export const useChatStore = createPersistStore(
               ]);
             });
             get().onNewMessage(memoMessage, session);
-            return; // 核心熔断
+            return; // 强行熔断后续大模型和生图请求，极度省钱、全网通用！
           }
         }
-        // =======================================================
+        // ===================================================================
 
         // MCP Response no need to fill template
         let mContent: string | MultimodalContent[] = isMcpResponse
@@ -597,12 +672,32 @@ export const useChatStore = createPersistStore(
         const recentMessages = await get().getMessagesWithMemory();
         let sendMessages = recentMessages.concat(userMessage);
         
-        // 如果进入大厨模式，动态组装包含用户个人喜好的专属提示词
+        // ============ 【线上全通用设计】第二关：解密用户隐私并在 LLM 之前织入 ============
         if (isChefMode) {
-          // 从本地缓存预留读取用户的喜好标签（后续我们在设置界面可以给用户提供勾选）
-          const userPreferences = safeLocalStorage().getItem("chef-user-preferences") || "无特殊过敏源和特殊饮食限制";
-          
-          const dynamicChefPrompt = `${CHEF_SYSTEM_PROMPT}\n\n[食客个人画像与口味偏好（你必须在食谱定制与画面展现中隐式迎合）：${userPreferences}]`;
+          let finalPreferences = "无特殊过敏源和饮食限制";
+
+          if (userPassword) {
+            const anonymityUserID = await hashPassword(userPassword);
+            const userCloudKey = `chef:user:${anonymityUserID}`;
+
+            // 如果提示词里带了新喜好，我们立刻加密把新偏好同步到线上，白嫖永不丢失
+            if (inlinePreference) {
+              finalPreferences = inlinePreference;
+              const encryptedPrefs = await encryptText(inlinePreference, userPassword);
+              await cloudDBSet(userCloudKey, encryptedPrefs);
+              console.log("[Chef Cloud] 用户新偏好已通过 AES 前端加密同步上云。");
+            } else {
+              // 如果没有输入新喜好，自动去线上捞出经加密的隐私数据并在前端现场解密
+              const encryptedCloudPrefs = await cloudDBGet(userCloudKey);
+              if (encryptedCloudPrefs) {
+                finalPreferences = await decryptText(encryptedCloudPrefs, userPassword);
+                console.log("[Chef Cloud] 成功从云端解密食客的历史口味画像。");
+              }
+            }
+          }
+
+          // 将现场还原出来的个人口味偏好，动态拼接进 DeepSeek 系统提示词
+          const dynamicChefPrompt = `${CHEF_SYSTEM_PROMPT}\n\n[食客个人画像与口味偏好（你必须在食谱定制与画面展现中隐式迎合）：${finalPreferences}]`;
 
           sendMessages = [
             createMessage({
@@ -612,6 +707,7 @@ export const useChatStore = createPersistStore(
             ...sendMessages,
           ];
         }
+        // ===================================================================
 
         const messageIndex = session.messages.length + 1;
 
@@ -673,8 +769,8 @@ export const useChatStore = createPersistStore(
                           `\n\n### 🧑‍🍳 菜品效果图\n![${cleanContent}](${imageUrl})`
                         );
                         
-                        // ============ 【核心逻辑】第三步：出图成功，将完整成果永久录入厨房记忆 ============
-                        saveRecipeToMemory(cleanContent, botMessage.content);
+                        // ============ 【线上全通用设计】第三关：大功告成，全量发布到云端公共记忆库 ============
+                        cloudDBSet(`chef:dish:${cleanContent.toLowerCase().trim()}`, botMessage.content);
                         // ===================================================================
                       }
                       get().updateTargetSession(session, (s) => {
