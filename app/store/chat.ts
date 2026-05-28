@@ -40,6 +40,59 @@ import { executeMcpAction, getAllTools, isMcpEnabled } from "../mcp/actions";
 import { extractMcpJson, isMcpJson } from "../mcp/utils";
 
 const localStorage = safeLocalStorage();
+// ==================== 专属大厨模式与 API 配置区 ====================
+
+// 1. Z-Image-Turbo 凭证配置（直接在这里填入你的接口信息）
+const Z_IMAGE_TURBO_KEY = "sk-skdheazwxwwqiojygsocsnkjtzdxuxgsljovfdlkpztyyhfg";
+const Z_IMAGE_TURBO_URL = "https://api.siliconflow.cn/v1/images/generations"; 
+
+// 2. 主厨系统提示词
+const CHEF_SYSTEM_PROMPT = `你是一个顶级的星级主厨和 AI 图像提示词专家。
+当用户向你请求某个菜品或进行修改时，你必须结合用户的个人喜好和口味（如果提供的话），深思熟虑后重新加工，并严格按照以下格式生成内容。不要带有任何格式之外的解释或废话：
+
+---RECIPE---
+# [菜名]
+[这里写详细的食谱，包含精美丰富的 Markdown 格式、用料、详细步骤]
+
+---PROMPT---
+[这里写一段专门为文生图模型量身定制的英文图像生成提示词。必须包含该菜品的细节、高级画质、精美餐具、专业光影构图，例如: food photography, professional studio lighting, depth of field, close-up shot, 8k, photorealistic, elegant plating...]`;
+
+// 3. Z-Image-Turbo 请求封装（支持 OpenAI 兼容格式）
+async function requestZImageTurbo(prompt: string): Promise<string> {
+  // 自动格式化 base url
+  const baseUrl = Z_IMAGE_TURBO_URL.replace(/\/$/, "");
+  // 如果你的接口地址本身包含了完整路径，就直接用；否则拼接标准的 /v1/images/generations
+  const path = baseUrl.includes("/v1/") ? baseUrl : `${baseUrl}/v1/images/generations`;
+
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${Z_IMAGE_TURBO_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "Tongyi-MAI/Z-Image-Turbo",
+      prompt: prompt,
+      n: 1,
+      size: "1024x1024",
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Z-Image-Turbo 请求失败: ${response.status} - ${errorText}`);
+  }
+
+  const resJson = await response.json();
+  // 自动兼容标准 OpenAI 格式 { data: [{ url: "..." }] } 或直接返回 { url: "..." }
+  const imageUrl = resJson?.data?.[0]?.url || resJson?.url || resJson?.image;
+  
+  if (!imageUrl) {
+    throw new Error("接口未返回有效的图片字段，请检查控制台返回的 JSON 结构");
+  }
+  return imageUrl;
+}
+// ===================================================================
 
 export type ChatMessageTool = {
   id: string;
@@ -412,14 +465,29 @@ export const useChatStore = createPersistStore(
         const session = get().currentSession();
         const modelConfig = session.mask.modelConfig;
 
+        // 1. 拦截器：检测关键词
+        const generateRegex = /^(G·|\/生成)\s*(.+)/i;
+        const match = content.trim().match(generateRegex);
+        
+        // 2. 修复联合类型编译报错：使用 getMessageTextContent 提取历史文本
+        const hasChefContext = session.messages.some(
+          (m) => m.role === "assistant" && getMessageTextContent(m).includes("---RECIPE---")
+        );
+        const isChefMode = !!match || hasChefContext;
+
+        let cleanContent = content;
+        if (match) {
+          cleanContent = match[2].trim(); // 提取干净的菜名
+        }
+
         // MCP Response no need to fill template
         let mContent: string | MultimodalContent[] = isMcpResponse
-          ? content
-          : fillTemplateWith(content, modelConfig);
+          ? cleanContent
+          : fillTemplateWith(cleanContent, modelConfig);
 
         if (!isMcpResponse && attachImages && attachImages.length > 0) {
           mContent = [
-            ...(content ? [{ type: "text" as const, text: content }] : []),
+            ...(cleanContent ? [{ type: "text" as const, text: cleanContent }] : []),
             ...attachImages.map((url) => ({
               type: "image_url" as const,
               image_url: { url },
@@ -439,16 +507,26 @@ export const useChatStore = createPersistStore(
           model: modelConfig.model,
         });
 
-        // get recent messages
         const recentMessages = await get().getMessagesWithMemory();
-        const sendMessages = recentMessages.concat(userMessage);
+        let sendMessages = recentMessages.concat(userMessage);
+        
+        // 如果进入大厨模式，注入系统级的 System Prompt
+        if (isChefMode) {
+          sendMessages = [
+            createMessage({
+              role: "system",
+              content: CHEF_SYSTEM_PROMPT,
+            }),
+            ...sendMessages,
+          ];
+        }
+
         const messageIndex = session.messages.length + 1;
 
-        // save user's and bot's message
         get().updateTargetSession(session, (session) => {
           const savedUserMessage = {
             ...userMessage,
-            content: mContent,
+            content: match ? match[0] + " " + cleanContent : mContent,
           };
           session.messages = session.messages.concat([
             savedUserMessage,
@@ -457,7 +535,8 @@ export const useChatStore = createPersistStore(
         });
 
         const api: ClientApi = getClientApi(modelConfig.providerName);
-        // make request
+        
+        // 第一个 API：驱动 DeepSeek 进行文本对话与指令加工
         api.llm.chat({
           messages: sendMessages,
           config: { ...modelConfig, stream: true },
@@ -476,6 +555,46 @@ export const useChatStore = createPersistStore(
               botMessage.content = message;
               botMessage.date = new Date().toLocaleString();
               get().onNewMessage(botMessage, session);
+
+              // 第二个 API：联动 Z-Image-Turbo 进行生图
+              if (isChefMode) {
+                console.log("[Chef Mode] 第一个 LLM 响应结束，开始解析绘图提示词...");
+                const promptMatch = message.match(/---PROMPT---([\s\S]*)/i);
+                
+                if (promptMatch && promptMatch[1]) {
+                  const imagePrompt = promptMatch[1].trim();
+                  console.log("[Chef Mode] 提取到绘图提示词: ", imagePrompt);
+                  
+                  const loadingText = "\n\n⏱️ **美食主厨正在为您精心摆盘并拍摄精美效果图，请稍候...**";
+                  botMessage.content += loadingText;
+                  
+                  get().updateTargetSession(session, (s) => {
+                    s.messages = s.messages.concat();
+                  });
+
+                  // 调用刚写好的 Z-Image-Turbo 独立生图通道
+                  requestZImageTurbo(imagePrompt)
+                    .then((imageUrl) => {
+                      botMessage.content = botMessage.content.replace(
+                        loadingText,
+                        `\n\n### 🧑‍🍳 菜品效果图\n![${cleanContent}](${imageUrl})`
+                      );
+                      get().updateTargetSession(session, (s) => {
+                        s.messages = s.messages.concat();
+                      });
+                    })
+                    .catch((err) => {
+                      console.error("[Chef Mode] 生图失败: ", err);
+                      botMessage.content = botMessage.content.replace(
+                        loadingText,
+                        `\n\n❌ *[图片生成失败]: ${err.message || err}*`
+                      );
+                      get().updateTargetSession(session, (s) => {
+                        s.messages = s.messages.concat();
+                      });
+                    });
+                }
+              }
             }
             ChatControllerPool.remove(session.id, botMessage.id);
           },
@@ -513,11 +632,9 @@ export const useChatStore = createPersistStore(
               session.id,
               botMessage.id ?? messageIndex,
             );
-
             console.error("[Chat] failed ", error);
           },
           onController(controller) {
-            // collect controller for stop/retry
             ChatControllerPool.addController(
               session.id,
               botMessage.id ?? messageIndex,
