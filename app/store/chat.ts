@@ -726,7 +726,7 @@ export const useChatStore = createPersistStore(
             else {
               const encryptedCloudPrefs = await cloudDBGet(userCloudKey);
               if (encryptedCloudPrefs) {
-                finalPreferences = decryptText(encryptedCloudPrefs, userPassword);
+                finalPreferences = await decryptText(encryptedCloudPrefs, userPassword);
                 console.log("[Chef Cloud] 🔓 成功从云端读取并解密食客的历史口味画像。");
                 
                 // 【可选】如果你希望用户“只要一直在用，就别清除；连续 7 天不用才清除”，可以取消下面这行的注释（滚动续期）：
