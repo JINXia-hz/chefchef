@@ -207,21 +207,45 @@ async function cloudDBGet(key: string): Promise<string | null> {
     return null;
   }
 }
+// ===================================================================
 
-// 6. 云端通用万能写接口 (HTTP REST)
-async function cloudDBSet(key: string, value: string): Promise<boolean> {
+// ==================== 专属大厨：统一数据寿命控制引擎（TTL） ====================
+
+async function cloudDBSet(key: string, value: string, ttlInSeconds?: number): Promise<boolean> {
   if (!UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_URL.includes("这里填入")) return false;
   try {
-    const res = await fetch(`${UPSTASH_REDIS_REST_URL.replace(/\/$/, "")}/set/${encodeURIComponent(key)}`, {
+    const baseUrl = UPSTASH_REDIS_REST_URL.replace(/\/$/, "");
+    
+    // 构建标准的 Redis REST 数组命令格式
+    const command = ["SET", key, value];
+    if (ttlInSeconds) {
+      command.push("EX", ttlInSeconds.toString());
+    }
+
+    const res = await fetch(baseUrl, {
       method: "POST",
-      headers: { Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}` },
-      body: value
+      headers: { 
+        "Authorization": `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(command), // 变成大字符串安全传输
     });
     return res.ok;
   } catch (e) {
     console.error("[CloudDB 写入故障]", e);
     return false;
   }
+}
+
+// 新增续期接口：用于激活“热数据”的生命周期
+async function cloudDBExpire(key: string, ttlInSeconds: number): Promise<void> {
+  if (!UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_URL.includes("这里填入")) return;
+  try {
+    // 异步发送 EXPIRE 指令，让 Redis 重新计时，前端无需等待其返回
+    fetch(`${UPSTASH_REDIS_REST_URL.replace(/\/$/, "")}/expire/${encodeURIComponent(key)}/${ttlInSeconds}`, {
+      headers: { Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}` }
+    }).catch(() => {});
+  } catch (e) {}
 }
 // ===================================================================
 
@@ -637,6 +661,11 @@ export const useChatStore = createPersistStore(
               ]);
             });
             get().onNewMessage(memoMessage, session);
+            const dishKey = `chef:dish:${cleanContent.toLowerCase().trim()}`;
+            // 只要被任意用户再次点中，公共菜谱记忆立刻重新刷新 30 天寿命（30 * 86400 秒）
+            cloudDBExpire(dishKey, 2592000); 
+
+            get().onNewMessage(memoMessage, session);
             return; // 强行熔断后续大模型和生图请求，极度省钱、全网通用！
           }
         }
@@ -675,28 +704,40 @@ export const useChatStore = createPersistStore(
         // ============ 【线上全通用设计】第二关：解密用户隐私并在 LLM 之前织入 ============
         if (isChefMode) {
           let finalPreferences = "无特殊过敏源和饮食限制";
+          
+          // 定义用户隐私偏好的数据寿命（例如：604800 秒 = 7 天）
+          // 7 天内如果没有更新，云端会自动无痕清除该用户的喜好历史
+          const USER_PREF_TTL = 604800; 
 
           if (userPassword) {
             const anonymityUserID = await hashPassword(userPassword);
             const userCloudKey = `chef:user:${anonymityUserID}`;
 
-            // 如果提示词里带了新喜好，我们立刻加密把新偏好同步到线上，白嫖永不丢失
+            // 情况 A：用户提示词里带了新喜好 -> 立刻加密同步上云，并注入 TTL 开启倒计时
             if (inlinePreference) {
               finalPreferences = inlinePreference;
               const encryptedPrefs = await encryptText(inlinePreference, userPassword);
-              await cloudDBSet(userCloudKey, encryptedPrefs);
-              console.log("[Chef Cloud] 用户新偏好已通过 AES 前端加密同步上云。");
-            } else {
-              // 如果没有输入新喜好，自动去线上捞出经加密的隐私数据并在前端现场解密
+              
+              // 关键改动：传入 USER_PREF_TTL，让云端开始 7 天计时
+              await cloudDBSet(userCloudKey, encryptedPrefs, USER_PREF_TTL);
+              console.log(`[Chef Cloud] 🔒 用户新偏好已通过 AES 加密上云，设定 ${USER_PREF_TTL / 86400} 天后自动清除。`);
+            } 
+            // 情况 B：没有输入新喜好 -> 自动去线上捞出历史偏好
+            else {
               const encryptedCloudPrefs = await cloudDBGet(userCloudKey);
               if (encryptedCloudPrefs) {
-                finalPreferences = await decryptText(encryptedCloudPrefs, userPassword);
-                console.log("[Chef Cloud] 成功从云端解密食客的历史口味画像。");
+                finalPreferences = decryptText(encryptedCloudPrefs, userPassword);
+                console.log("[Chef Cloud] 🔓 成功从云端读取并解密食客的历史口味画像。");
+                
+                // 【可选】如果你希望用户“只要一直在用，就别清除；连续 7 天不用才清除”，可以取消下面这行的注释（滚动续期）：
+                // cloudDBExpire(userCloudKey, USER_PREF_TTL);
+              } else {
+                console.log("[Chef Cloud] ⏳ 偏好已过期清除或从未设置，本次采用默认无限制口味。");
               }
             }
           }
 
-          // 将现场还原出来的个人口味偏好，动态拼接进 DeepSeek 系统提示词
+          // 将现场还原出来的个人口味偏好，动态拼接进系统提示词
           const dynamicChefPrompt = `${CHEF_SYSTEM_PROMPT}\n\n[食客个人画像与口味偏好（你必须在食谱定制与画面展现中隐式迎合）：${finalPreferences}]`;
 
           sendMessages = [
@@ -770,7 +811,8 @@ export const useChatStore = createPersistStore(
                         );
                         
                         // ============ 【线上全通用设计】第三关：大功告成，全量发布到云端公共记忆库 ============
-                        cloudDBSet(`chef:dish:${cleanContent.toLowerCase().trim()}`, botMessage.content);
+                        const dishKey = `chef:dish:${cleanContent.toLowerCase().trim()}`;
+                        cloudDBSet(dishKey, botMessage.content);
                         // ===================================================================
                       }
                       get().updateTargetSession(session, (s) => {
