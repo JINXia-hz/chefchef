@@ -557,6 +557,7 @@ export const useChatStore = createPersistStore(
               get().onNewMessage(botMessage, session);
 
               // 第二个 API：联动 Z-Image-Turbo 进行生图
+              // 第二个 API：联动 Z-Image-Turbo 进行生图
               if (isChefMode) {
                 console.log("[Chef Mode] 第一个 LLM 响应结束，开始解析绘图提示词...");
                 const promptMatch = message.match(/---PROMPT---([\s\S]*)/i);
@@ -566,7 +567,11 @@ export const useChatStore = createPersistStore(
                   console.log("[Chef Mode] 提取到绘图提示词: ", imagePrompt);
                   
                   const loadingText = "\n\n⏱️ **美食主厨正在为您精心摆盘并拍摄精美效果图，请稍候...**";
-                  botMessage.content += loadingText;
+                  
+                  // 安全类型判定：确保当前内容是字符串再执行拼接
+                  if (typeof botMessage.content === "string") {
+                    botMessage.content += loadingText;
+                  }
                   
                   get().updateTargetSession(session, (s) => {
                     s.messages = s.messages.concat();
@@ -575,20 +580,25 @@ export const useChatStore = createPersistStore(
                   // 调用刚写好的 Z-Image-Turbo 独立生图通道
                   requestZImageTurbo(imagePrompt)
                     .then((imageUrl) => {
-                      botMessage.content = botMessage.content.replace(
-                        loadingText,
-                        `\n\n### 🧑‍🍳 菜品效果图\n![${cleanContent}](${imageUrl})`
-                      );
+                      // 安全类型判定：确保是字符串再执行替换，彻底解决 Vercel 报错
+                      if (typeof botMessage.content === "string") {
+                        botMessage.content = botMessage.content.replace(
+                          loadingText,
+                          `\n\n### 🧑‍🍳 菜品效果图\n![${cleanContent}](${imageUrl})`
+                        );
+                      }
                       get().updateTargetSession(session, (s) => {
                         s.messages = s.messages.concat();
                       });
                     })
                     .catch((err) => {
                       console.error("[Chef Mode] 生图失败: ", err);
-                      botMessage.content = botMessage.content.replace(
-                        loadingText,
-                        `\n\n❌ *[图片生成失败]: ${err.message || err}*`
-                      );
+                      if (typeof botMessage.content === "string") {
+                        botMessage.content = botMessage.content.replace(
+                          loadingText,
+                          `\n\n❌ *[图片生成失败]: ${err.message || err}*`
+                        );
+                      }
                       get().updateTargetSession(session, (s) => {
                         s.messages = s.messages.concat();
                       });
