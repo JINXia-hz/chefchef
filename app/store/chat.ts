@@ -286,33 +286,11 @@ export const BOT_HELLO: ChatMessage = createMessage({
 });
 
 function createEmptySession(): ChatSession {
-  const welcomeMessage = createMessage({
-          role: "assistant",
-          content: `🧑‍🍳 **呦，客官来了？咱是Chef 酾夫。**
-
-快快使用专门的“生成指令”开启双 API 文本食谱与图像摆盘服务：
-
-💡 **【标准点菜】** 输入：\`/生成 菜名\`（或者 \`G·菜名\`），如：
-> \`/生成 锅包肉\`
-> \`/生成 红烧肉 经典本帮菜做法，多放点冰糖糖色\`
-
-🔐 **【隐私喜好与跨设备记忆】**
-在尾部带上客官自记的私钥密码，可以加密同步并解密口味偏好（无须注册登录）：
-> \`/生成 黄金炒饭 密码:chefchef911\`
-> \`/生成 战斧牛排 密码:chefchef666 偏好:五分熟、不要香菜、喜欢法式极简摆盘\`
-
-🔄 **【多轮微调】**
-生成结果后，直接打字就能指挥修改：“盘子换成黑色”、“酱汁再浓郁一点”，效果图与食谱会同步进化！
-
-*咱脑子好使，若别人点过这菜，可不费客官银两复现*`,
-          date: new Date().toLocaleString(),
-          streaming: false,
-        });
   return {
     id: nanoid(),
     topic: DEFAULT_TOPIC,
     memoryPrompt: "",
-    messages: [welcomeMessage],
+    messages: [],
     stat: {
       tokenCount: 0,
       wordCount: 0,
