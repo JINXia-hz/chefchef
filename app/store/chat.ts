@@ -94,6 +94,66 @@ async function requestZImageTurbo(prompt: string): Promise<string> {
 }
 // ===================================================================
 
+// ==================== 专属大厨：IndexedDB 记忆与喜好引擎 ====================
+const CHEF_DB_NAME = "ChefChefMemory";
+const CHEF_STORE_NAME = "dish_caches";
+
+// 初始化或打开本地大厨数据库
+function openChefDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(CHEF_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(CHEF_STORE_NAME)) {
+        db.createObjectStore(CHEF_STORE_NAME, { keyPath: "dishName" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+// 记忆读取：根据菜名检索本地是否有现成的精美成果
+async function getRecipeFromMemory(dishName: string): Promise<{ content: string } | null> {
+  try {
+    const db = await openChefDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(CHEF_STORE_NAME, "readonly");
+      const store = transaction.objectStore(CHEF_STORE_NAME);
+      const request = store.get(dishName.toLowerCase().trim());
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (e) {
+    console.error("[Chef Memory] 读取缓存失败:", e);
+    return null;
+  }
+}
+
+// 记忆写入：将生成完美的 食谱+图片 归档入库
+async function saveRecipeToMemory(dishName: string, fullContent: string): Promise<void> {
+  try {
+    const db = await openChefDB();
+    return new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(CHEF_STORE_NAME, "readwrite");
+      const store = transaction.objectStore(CHEF_STORE_NAME);
+      const request = store.put({
+        dishName: dishName.toLowerCase().trim(),
+        content: fullContent,
+        updatedAt: Date.now(),
+      });
+      request.onsuccess = () => {
+        console.log(`[Chef Memory] 已成功将 【${dishName}】 录入本地厨房记忆`);
+        resolve();
+      };
+      request.onerror = () => reject(request.error);
+    });
+  } catch (e) {
+    console.error("[Chef Memory] 写入缓存失败:", e);
+  }
+}
+// ===================================================================
+
 export type ChatMessageTool = {
   id: string;
   index?: number;
@@ -469,7 +529,6 @@ export const useChatStore = createPersistStore(
         const generateRegex = /^(G·|\/生成)\s*(.+)/i;
         const match = content.trim().match(generateRegex);
         
-        // 2. 修复联合类型编译报错：使用 getMessageTextContent 提取历史文本
         const hasChefContext = session.messages.some(
           (m) => m.role === "assistant" && getMessageTextContent(m).includes("---RECIPE---")
         );
@@ -479,6 +538,34 @@ export const useChatStore = createPersistStore(
         if (match) {
           cleanContent = match[2].trim(); // 提取干净的菜名
         }
+
+        // ============ 【核心逻辑】第三步：击中记忆拦截检查 ============
+        if (match && isChefMode) {
+          const cachedMemory = await getRecipeFromMemory(cleanContent);
+          if (cachedMemory) {
+            console.log(`[Chef Memory] ⚡ 成功击中 【${cleanContent}】 的本地厨房记忆！正在免 Token 加载...`);
+            
+            // 构建一条瞬间完成的消息
+            const memoMessage = createMessage({
+              role: "assistant",
+              content: cachedMemory.content,
+              streaming: false,
+              model: modelConfig.model,
+              date: new Date().toLocaleString(),
+            });
+
+            // 塞入历史记录，直接完工，全面阻断后面的大模型与生图网络调用
+            get().updateTargetSession(session, (session) => {
+              session.messages = session.messages.concat([
+                createMessage({ role: "user", content: content }),
+                memoMessage,
+              ]);
+            });
+            get().onNewMessage(memoMessage, session);
+            return; // 核心熔断
+          }
+        }
+        // =======================================================
 
         // MCP Response no need to fill template
         let mContent: string | MultimodalContent[] = isMcpResponse
@@ -510,12 +597,17 @@ export const useChatStore = createPersistStore(
         const recentMessages = await get().getMessagesWithMemory();
         let sendMessages = recentMessages.concat(userMessage);
         
-        // 如果进入大厨模式，注入系统级的 System Prompt
+        // 如果进入大厨模式，动态组装包含用户个人喜好的专属提示词
         if (isChefMode) {
+          // 从本地缓存预留读取用户的喜好标签（后续我们在设置界面可以给用户提供勾选）
+          const userPreferences = safeLocalStorage().getItem("chef-user-preferences") || "无特殊过敏源和特殊饮食限制";
+          
+          const dynamicChefPrompt = `${CHEF_SYSTEM_PROMPT}\n\n[食客个人画像与口味偏好（你必须在食谱定制与画面展现中隐式迎合）：${userPreferences}]`;
+
           sendMessages = [
             createMessage({
               role: "system",
-              content: CHEF_SYSTEM_PROMPT,
+              content: dynamicChefPrompt,
             }),
             ...sendMessages,
           ];
@@ -536,7 +628,6 @@ export const useChatStore = createPersistStore(
 
         const api: ClientApi = getClientApi(modelConfig.providerName);
         
-        // 第一个 API：驱动 DeepSeek 进行文本对话与指令加工
         api.llm.chat({
           messages: sendMessages,
           config: { ...modelConfig, stream: true },
@@ -556,8 +647,6 @@ export const useChatStore = createPersistStore(
               botMessage.date = new Date().toLocaleString();
               get().onNewMessage(botMessage, session);
 
-              // 第二个 API：联动 Z-Image-Turbo 进行生图
-              // 第二个 API：联动 Z-Image-Turbo 进行生图
               if (isChefMode) {
                 console.log("[Chef Mode] 第一个 LLM 响应结束，开始解析绘图提示词...");
                 const promptMatch = message.match(/---PROMPT---([\s\S]*)/i);
@@ -568,7 +657,6 @@ export const useChatStore = createPersistStore(
                   
                   const loadingText = "\n\n⏱️ **美食主厨正在为您精心摆盘并拍摄精美效果图，请稍候...**";
                   
-                  // 安全类型判定：确保当前内容是字符串再执行拼接
                   if (typeof botMessage.content === "string") {
                     botMessage.content += loadingText;
                   }
@@ -577,15 +665,17 @@ export const useChatStore = createPersistStore(
                     s.messages = s.messages.concat();
                   });
 
-                  // 调用刚写好的 Z-Image-Turbo 独立生图通道
                   requestZImageTurbo(imagePrompt)
                     .then((imageUrl) => {
-                      // 安全类型判定：确保是字符串再执行替换，彻底解决 Vercel 报错
                       if (typeof botMessage.content === "string") {
                         botMessage.content = botMessage.content.replace(
                           loadingText,
                           `\n\n### 🧑‍🍳 菜品效果图\n![${cleanContent}](${imageUrl})`
                         );
+                        
+                        // ============ 【核心逻辑】第三步：出图成功，将完整成果永久录入厨房记忆 ============
+                        saveRecipeToMemory(cleanContent, botMessage.content);
+                        // ===================================================================
                       }
                       get().updateTargetSession(session, (s) => {
                         s.messages = s.messages.concat();
