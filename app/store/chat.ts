@@ -47,16 +47,33 @@ const ACTIVE_COOKING_LOCKS = new Set<string>();
 const Z_IMAGE_TURBO_KEY = "sk-skdheazwxwwqiojygsocsnkjtzdxuxgsljovfdlkpztyyhfg";
 const Z_IMAGE_TURBO_URL = "https://api.siliconflow.cn/v1/images/generations";
 
-// 2. 主厨系统提示词
+// 2. 主厨系统提示词（支持多菜品）
 const CHEF_SYSTEM_PROMPT = `你是一个顶级的星级主厨和 AI 图像提示词专家。
-当用户向你请求某个菜品或进行修改时，你必须结合用户的个人喜好和口味（如果提供的话），深思熟虑后重新加工，并严格按照以下格式生成内容。不要带有任何格式之外的解释或废话：
+当用户向你请求一个或多个菜品时，你必须结合用户的个人喜好和口味（如果提供的话），深思熟虑后重新加工，并严格按照以下格式生成内容。不要带有任何格式之外的解释或废话。
+
+如果用户请求了多个菜品（以逗号分隔），你必须为每个菜品都生成独立的食谱和图像提示词。
+
+## 输出格式
+
+---DISHES---
+- [菜名] | [主要食材1], [主要食材2], [主要食材3]
+- [菜名2] | [主要食材A], [主要食材B]
+...（每道菜一行，格式为：菜名 | 食材1, 食材2, 食材3）
 
 ---RECIPE---
 # [菜名]
 [这里写详细的食谱，包含精美丰富的 Markdown 格式、用料、详细步骤]
 
 ---PROMPT---
-[这里写一段专门为文生图模型量身定制的英文图像生成提示词。必须包含该菜品的细节、高级画质、精美餐具、专业光影构图，例如: food photography, professional studio lighting, depth of field, close-up shot, 8k, photorealistic, elegant plating...]`;
+[这一段专门为文生图模型量身定制的英文图像生成提示词。必须包含该菜品的细节、高级画质、精美餐具、专业光影构图]
+
+[如有更多菜品，重复 ---RECIPE--- 和 ---PROMPT--- 段落]
+
+## 重要：图像风格统一要求
+所有菜品的 ---PROMPT--- 必须使用完全相同的餐盘风格、背景布景和光影设定。请在第一个 PROMPT 中定义统一的视觉风格（例如：white ceramic plate, dark slate table, warm candlelight, top-down view, professional food photography, studio lighting），后续所有菜品的 PROMPT 必须复用完全相同的背景、餐具、布光描述，仅替换菜品本身的描述。
+格式示例：
+PROMPT 1: "[菜品1描述], on a white ceramic plate, dark slate tabletop, warm candlelight ambiance, top-down overhead shot, professional food photography, 8k, photorealistic, elegant plating"
+PROMPT 2: "[菜品2描述], on a white ceramic plate, dark slate tabletop, warm candlelight ambiance, top-down overhead shot, professional food photography, 8k, photorealistic, elegant plating"`;
 
 // 3. Z-Image-Turbo 请求封装（支持 OpenAI 兼容格式）
 async function requestZImageTurbo(prompt: string): Promise<string> {
@@ -96,6 +113,86 @@ async function requestZImageTurbo(prompt: string): Promise<string> {
     throw new Error("接口未返回有效的图片字段，请检查控制台返回的 JSON 结构");
   }
   return imageUrl;
+}
+
+// 4. Canvas 文字标注引擎：给生图添加菜名和食材，不喧宾夺主
+async function generateLabeledImage(
+  prompt: string,
+  dishName: string,
+  ingredients: string,
+): Promise<string> {
+  const rawImageUrl = await requestZImageTurbo(prompt);
+
+  return new Promise<string>((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        resolve(rawImageUrl);
+        return;
+      }
+
+      const imgW = img.width;
+      const imgH = img.height;
+
+      // 在底部添加文字标注区域（图片高度的 12%）
+      const labelHeight = Math.round(imgH * 0.14);
+      canvas.width = imgW;
+      canvas.height = imgH + labelHeight;
+
+      // 先绘制原始图片
+      ctx.drawImage(img, 0, 0, imgW, imgH);
+
+      // 底部半透明背景条（不影响图片主体）
+      ctx.fillStyle = "rgba(20, 20, 20, 0.72)";
+      ctx.fillRect(0, imgH, imgW, labelHeight);
+
+      // 细线分隔
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, imgH);
+      ctx.lineTo(imgW, imgH);
+      ctx.stroke();
+
+      // 菜名文字
+      const fontSize = Math.max(18, Math.round(imgW * 0.04));
+      ctx.fillStyle = "#ffffff";
+      ctx.font = `bold ${fontSize}px "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(`🍽️ ${dishName}`, imgW / 2, imgH + labelHeight * 0.35);
+
+      // 食材文字
+      if (ingredients) {
+        const ingredientFontSize = Math.max(14, Math.round(imgW * 0.026));
+        ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+        ctx.font = `${ingredientFontSize}px "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif`;
+        ctx.fillText(
+          `食材: ${ingredients}`,
+          imgW / 2,
+          imgH + labelHeight * 0.68,
+        );
+      }
+
+      // 导出为 Blob URL
+      canvas.toBlob((blob) => {
+        if (blob) {
+          resolve(URL.createObjectURL(blob));
+        } else {
+          // 降级到 data URL
+          resolve(canvas.toDataURL("image/png"));
+        }
+      }, "image/png");
+    };
+    img.onerror = () => {
+      console.warn("[Chef Mode] 图片加载失败，无法添加标注，降级为原始 URL");
+      resolve(rawImageUrl);
+    };
+    img.src = rawImageUrl;
+  });
 }
 // ===================================================================
 
@@ -894,11 +991,40 @@ export const useChatStore = createPersistStore(
                 console.log(
                   "[Chef Mode] 第一个 LLM 响应结束，开始解析绘图提示词...",
                 );
-                const promptMatch = message.match(/---PROMPT---([\s\S]*)/i);
 
-                if (promptMatch && promptMatch[1]) {
-                  const imagePrompt = promptMatch[1].trim();
-                  console.log("[Chef Mode] 提取到绘图提示词: ", imagePrompt);
+                // 解析 DISHES 段落获取菜名和食材
+                const dishesMatch = message.match(
+                  /---DISHES---([\s\S]*?)(?:---RECIPE---|$)/i,
+                );
+                const dishInfos: { name: string; ingredients: string }[] = [];
+                if (dishesMatch && dishesMatch[1]) {
+                  const dishLines = dishesMatch[1]
+                    .trim()
+                    .split("\n")
+                    .filter((l) => l.trim().startsWith("-"));
+                  for (const line of dishLines) {
+                    const parts = line.replace(/^-\s*/, "").split("|");
+                    const name = (parts[0] || "").trim();
+                    const ingredients = (parts[1] || "").trim();
+                    if (name) {
+                      dishInfos.push({ name, ingredients });
+                    }
+                  }
+                }
+
+                // 解析所有 PROMPT 块
+                const promptMatches = message.match(
+                  /---PROMPT---([\s\S]*?)(?=---RECIPE---|$)/gi,
+                );
+
+                if (promptMatches && promptMatches.length > 0) {
+                  const prompts = promptMatches.map((p) =>
+                    p.replace(/---PROMPT---/i, "").trim(),
+                  );
+
+                  console.log(
+                    `[Chef Mode] 提取到 ${prompts.length} 个绘图提示词，${dishInfos.length} 个菜品信息`,
+                  );
 
                   const loadingText =
                     "\n\n⏱️ **美食主厨正在为您精心摆盘并拍摄精美效果图，请稍候...**";
@@ -911,15 +1037,50 @@ export const useChatStore = createPersistStore(
                     s.messages = s.messages.concat();
                   });
 
-                  requestZImageTurbo(imagePrompt)
-                    .then(async (imageUrl) => {
+                  // 并发生成所有图片
+                  const imagePromises = prompts.map((prompt, index) => {
+                    const dishInfo = dishInfos[index] || {
+                      name: cleanContent,
+                      ingredients: "",
+                    };
+                    return generateLabeledImage(
+                      prompt,
+                      dishInfo.name,
+                      dishInfo.ingredients,
+                    ).catch((err) => {
+                      console.error(
+                        `[Chef Mode] 第 ${index + 1} 张图生成失败:`,
+                        err,
+                      );
+                      return `❌ *[图片 ${index + 1} 生成失败: ${
+                        err.message || err
+                      }]*`;
+                    });
+                  });
+
+                  Promise.all(imagePromises)
+                    .then(async (results) => {
                       if (typeof botMessage.content === "string") {
+                        // 构建所有图片的 Markdown 替换
+                        let imagesMarkdown = "";
+                        for (let i = 0; i < results.length; i++) {
+                          const dishInfo = dishInfos[i] || {
+                            name: `菜品 ${i + 1}`,
+                            ingredients: "",
+                          };
+                          if (results[i].startsWith("❌")) {
+                            imagesMarkdown += `\n\n${results[i]}`;
+                          } else {
+                            imagesMarkdown += `\n\n### 🧑‍🍳 ${dishInfo.name}\n![${dishInfo.name}](${results[i]})`;
+                          }
+                        }
+
                         botMessage.content = botMessage.content.replace(
                           loadingText,
-                          `\n\n### 🧑‍🍳 菜品效果图\n![${cleanContent}](${imageUrl})`,
+                          imagesMarkdown,
                         );
 
-                        // ============ 【线上全通用设计】第三关 ============
+                        // 云端落盘
                         const dishKey = `chef:dish:${cleanContent
                           .toLowerCase()
                           .trim()}`;
@@ -927,11 +1088,11 @@ export const useChatStore = createPersistStore(
                           dishKey,
                           botMessage.content,
                         );
-                        ACTIVE_COOKING_LOCKS.delete(dishKey); // 🔓 解锁
+                        ACTIVE_COOKING_LOCKS.delete(dishKey);
 
                         if (writeOk) {
                           showToast(
-                            "💾 菜品效果图已拍摄完毕，通用记忆已安全落盘！",
+                            `💾 ${results.length} 道菜品效果图已拍摄完毕，通用记忆已安全落盘！`,
                           );
                         } else {
                           console.error(
@@ -941,44 +1102,34 @@ export const useChatStore = createPersistStore(
                             "⚠️ 云端写入失败，本次结果仅保留在本地会话中。",
                           );
                         }
-                        // ===============================================
                       }
                       get().updateTargetSession(session, (s) => {
                         s.messages = s.messages.concat();
                       });
                     })
                     .catch(async (err) => {
-                      console.error("[Chef Mode] 生图失败: ", err);
+                      console.error("[Chef Mode] 批量生图失败: ", err);
                       const dishKey = `chef:dish:${cleanContent
                         .toLowerCase()
                         .trim()}`;
                       ACTIVE_COOKING_LOCKS.delete(dishKey);
 
-                      // 🔧 降级存储：图片虽然失败，但菜谱文本已经生成，
-                      // 将不含图片占位符的纯菜谱落盘，避免浪费 LLM 成本。
                       if (typeof botMessage.content === "string") {
-                        const recipeOnly = botMessage.content.replace(
-                          loadingText,
-                          "",
-                        );
                         botMessage.content = botMessage.content.replace(
                           loadingText,
-                          `\n\n❌ *[图片生成失败]: ${err.message || err}*`,
+                          `\n\n❌ *[批量图片生成失败]: ${err.message || err}*`,
                         );
-
-                        const writeOk = await cloudDBSet(dishKey, recipeOnly);
-                        if (writeOk) {
-                          console.log(
-                            `[Chef Cloud] ⚠️ 图片失败但菜谱已降级落盘，键名: [${dishKey}]`,
-                          );
-                        }
                       }
 
-                      showToast("❌ 美食效果图拍摄失败！锁已释放。");
+                      showToast("❌ 批量美食效果图拍摄失败！锁已释放。");
                       get().updateTargetSession(session, (s) => {
                         s.messages = s.messages.concat();
                       });
                     });
+                } else {
+                  // 兼容旧格式：没有 ---PROMPT--- 块
+                  console.log("[Chef Mode] 未找到 PROMPT 块，跳过生图。");
+                  ACTIVE_COOKING_LOCKS.delete(currentDishKey);
                 }
               }
             }
