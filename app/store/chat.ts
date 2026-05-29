@@ -48,10 +48,15 @@ const Z_IMAGE_TURBO_KEY = "sk-skdheazwxwwqiojygsocsnkjtzdxuxgsljovfdlkpztyyhfg";
 const Z_IMAGE_TURBO_URL = "https://api.siliconflow.cn/v1/images/generations";
 
 // 2. 主厨系统提示词（支持多菜品）
-const CHEF_SYSTEM_PROMPT = `你是一个顶级的星级主厨和 AI 图像提示词专家。
-当用户向你请求一个或多个菜品时，你必须结合用户的个人喜好和口味（如果提供的话），深思熟虑后重新加工，并严格按照以下格式生成内容。不要带有任何格式之外的解释或废话。
+const CHEF_SYSTEM_PROMPT = `你是一个顶级的星级主厨、食物构成主义艺术家和 AI 图像提示词专家。
+当用户向你请求一个或多个菜品时，你必须结合用户的个人喜好和口味（如果提供的话），深思熟虑后重新加工，将其转化为具有“构成主义几何几何、大色块撞色、且充满 élan vital（生命力与活泼趣味）”的现代先锋料理，并严格按照以下格式生成内容。不要带有任何格式之外的解释或废话。
 
 如果用户请求了多个菜品（以逗号分隔），你必须为每个菜品都生成独立的食谱和图像提示词。
+
+## 菜品研发核心风格：构成主义与生命力的融合
+1. 几何构成（Constructivist Geometry）：抛弃传统堆砌式摆盘。用食材堆叠出干净的圆形、矩形、对角线或不对称的动态平衡。
+2. 撞色与大色块（Color-blocking）：运用高饱和度、纯粹的固体色块进行撞色（如番茄红、蛋黄、罗勒绿、墨鱼黑的利落拼接）。
+3. 活泼与 élan vital：不要严肃死板，不要颓废阴暗。利用食材天然的质感、跳跃的色彩和灵动的线条，传达出一种昂扬、亲和、充满生命律动的愉悦感。
 
 ## 输出格式
 
@@ -62,18 +67,20 @@ const CHEF_SYSTEM_PROMPT = `你是一个顶级的星级主厨和 AI 图像提示
 
 ---RECIPE---
 # [菜名]
-[这里写详细的食谱，包含精美丰富的 Markdown 格式、用料、详细步骤]
+[这里写详细的食谱。必须包含精美丰富的 Markdown 格式、用料、以及如何通过精准切配和摆盘，实现“构成主义几何几何、大色块撞色与活泼生命力”的详细步骤]
 
 ---PROMPT---
-[这一段专门为文生图模型量身定制的英文图像生成提示词。必须包含该菜品的细节、高级画质、精美餐具、专业光影构图]
+[这一段专门为文生图模型量身定制的英文图像生成提示词。必须包含该菜品的几何构图、色彩对比、高级画质、朴素餐具、专业光影]
 
 [如有更多菜品，重复 ---RECIPE--- 和 ---PROMPT--- 段落]
 
-## 重要：图像风格统一要求
-所有菜品的 ---PROMPT--- 必须使用完全相同的餐盘风格、背景布景和光影设定。请在第一个 PROMPT 中定义统一的视觉风格（例如：white ceramic plate, dark slate table, warm candlelight, top-down view, professional food photography, studio lighting），后续所有菜品的 PROMPT 必须复用完全相同的背景、餐具、布光描述，仅替换菜品本身的描述。
-格式示例：
-PROMPT 1: "[菜品1描述], on a white ceramic plate, dark slate tabletop, warm candlelight ambiance, top-down overhead shot, professional food photography, 8k, photorealistic, elegant plating"
-PROMPT 2: "[菜品2描述], on a white ceramic plate, dark slate tabletop, warm candlelight ambiance, top-down overhead shot, professional food photography, 8k, photorealistic, elegant plating"`;
+## 重要：图像风格统一要求（构成主义活泼色块风格）
+所有菜品的 ---PROMPT--- 必须使用完全相同的餐盘、背景和光影，以确保整体视觉的系列感。
+统一的视觉基调：[自定义背景], [朴素餐具（如纯白/纯黑的圆形或方形无边盘）], bright and playful studio lighting, clean distinct shadows, constructivism-inspired composition, bold color-blocking style, cheerful and energetic mood, high vitality, professional food styling, 8k, photorealistic, sharp focus.
+
+格式示例（可根据需要微调背景色）：
+PROMPT 1: "[菜品1的几何造型与撞色描述], arranged in a strict yet playful constructivist geometric composition, on a minimalist matte white square plate, set against a solid vibrant terracotta red background, bright and energetic studio lighting, bold color-blocking, full of élan vital, professional food photography, 8k, sharp focus"
+PROMPT 2: "[菜品2的几何造型与撞色描述], arranged in a strict yet playful constructivist geometric composition, on a minimalist matte white square plate, set against a solid vibrant terracotta red background, bright and energetic studio lighting, bold color-blocking, full of élan vital, professional food photography, 8k, sharp focus"`;
 
 // 3. Z-Image-Turbo 请求封装（支持 OpenAI 兼容格式）
 async function requestZImageTurbo(prompt: string): Promise<string> {
@@ -809,16 +816,18 @@ export const useChatStore = createPersistStore(
         // ============ 【线上全通用设计】第一关：线上全局通用记忆拦截 ============
         if (match && isChefMode) {
           const isRequestingCustom = !!inlinePreference || !!userPassword;
-          if (!isRequestingCustom) {
-            const dishKey = `chef:dish:${cleanContent.toLowerCase().trim()}`;
+          const dishKey = `chef:dish:${cleanContent.toLowerCase().trim()}`;
 
-            // 🛑 【核心防御 1】：如果本地正有相同菜品的请求在“画图/做菜”，立刻在前端硬熔断！
+          if (!isRequestingCustom) {
+            // 🛑 【核心防御 1】：先加锁，再读云端。彻底杜绝 React 重渲染或并发调用
+            // 导致"云端命中后仍触发 LLM 重复生成"的竞态漏洞。
             if (ACTIVE_COOKING_LOCKS.has(dishKey)) {
               showToast(
                 "🧑‍🍳 主厨提示：这道菜正在为您精心烹饪与摆盘中，请勿重复下单，请稍候！",
               );
               return;
             }
+            ACTIVE_COOKING_LOCKS.add(dishKey);
 
             // 🌐 开始读取云端
             showToast("🔍 正在检索线上公共厨房记忆库...");
@@ -845,16 +854,16 @@ export const useChatStore = createPersistStore(
               get().onNewMessage(memoMessage, session);
 
               cloudDBExpire(dishKey, 2592000);
+              // 🔓 延迟解锁：不立即释放锁，防止 React setState 触发的重渲染
+              // 在同一事件循环中再次调用 onUserInput 导致重复生成。
+              setTimeout(() => ACTIVE_COOKING_LOCKS.delete(dishKey), 800);
               return; // 强行熔断
             } else {
               // 🧪 诊断提示：云端未命中（可能是第一次生成，或者是网络不通）
               showToast("⏳ 云端未命中或读取异常，主厨开始现场为您研发新菜...");
+              // 锁保持，后续 LLM+图片完成后在 then/catch 中释放
             }
           }
-        }
-        const currentDishKey = `chef:dish:${cleanContent.toLowerCase().trim()}`;
-        if (isChefMode && !inlinePreference && !userPassword) {
-          ACTIVE_COOKING_LOCKS.add(currentDishKey);
         }
         // ===================================================================
 
@@ -1129,7 +1138,10 @@ export const useChatStore = createPersistStore(
                 } else {
                   // 兼容旧格式：没有 ---PROMPT--- 块
                   console.log("[Chef Mode] 未找到 PROMPT 块，跳过生图。");
-                  ACTIVE_COOKING_LOCKS.delete(currentDishKey);
+                  const fallbackDishKey = `chef:dish:${cleanContent
+                    .toLowerCase()
+                    .trim()}`;
+                  ACTIVE_COOKING_LOCKS.delete(fallbackDishKey);
                 }
               }
             }
