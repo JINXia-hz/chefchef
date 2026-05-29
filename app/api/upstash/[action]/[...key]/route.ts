@@ -11,57 +11,48 @@ async function handle(
     return NextResponse.json({ body: "OK" }, { status: 200 });
   }
   const [...key] = params.key;
-  // only allow to request to *.upstash.io
+
   if (!endpoint || !new URL(endpoint).hostname.endsWith(".upstash.io")) {
     return NextResponse.json(
       {
         error: true,
         msg: "you are not allowed to request " + params.key.join("/"),
       },
-      {
-        status: 403,
-      },
+      { status: 403 },
     );
   }
 
-  // only allow upstash get and set method
   if (params.action !== "get" && params.action !== "set") {
-    console.log("[Upstash Route] forbidden action ", params.action);
     return NextResponse.json(
-      {
-        error: true,
-        msg: "you are not allowed to request " + params.action,
-      },
-      {
-        status: 403,
-      },
+      { error: true, msg: "you are not allowed to request " + params.action },
+      { status: 403 },
     );
   }
 
   const targetUrl = `${endpoint}/${params.action}/${params.key.join("/")}`;
-
   const method = req.method;
   const shouldNotHaveBody = ["get", "head"].includes(
     method?.toLowerCase() ?? "",
   );
 
+  // 🛑 【核心修正】：绝对不能直接转发 req.body 流！必须将其转为 ArrayBuffer 缓存
+  // 这样转发时 fetch 会自动追加精准的 Content-Length，彻底修复 Upstash 接收 chunked 流导致空写的问题
+  const bodyData = shouldNotHaveBody ? null : await req.arrayBuffer();
+
   const fetchOptions: RequestInit = {
     headers: {
       authorization: req.headers.get("authorization") ?? "",
+      "content-type": req.headers.get("content-type") ?? "text/plain", // 保持文本格式
     },
-    body: shouldNotHaveBody ? null : req.body,
+    body: bodyData,
     method,
-    // @ts-ignore
-    duplex: "half",
   };
 
-  console.log("[Upstash Proxy]", targetUrl, fetchOptions);
-  const fetchResult = await fetch(targetUrl, fetchOptions);
-
-  console.log("[Any Proxy]", targetUrl, {
-    status: fetchResult.status,
-    statusText: fetchResult.statusText,
+  console.log("[Upstash Proxy Forward]", targetUrl, {
+    method,
+    hasBody: !!bodyData,
   });
+  const fetchResult = await fetch(targetUrl, fetchOptions);
 
   return fetchResult;
 }
