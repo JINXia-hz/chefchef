@@ -373,7 +373,7 @@ bash <(curl -s https://raw.githubusercontent.com/Yidadaa/ChatGPT-Next-Web/main/s
 
 ⚠️ 注意：如果你安装过程中遇到了问题，请使用 docker 部署。
 
-### 第一次修改。
+### 第一次修改。Cloudflare是傻逼网站。
 
 ## 鸣谢
 
