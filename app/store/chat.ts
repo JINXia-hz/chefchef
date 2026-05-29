@@ -189,7 +189,7 @@ async function cloudDBGet(key: string): Promise<string | null> {
         Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(["GET", key]), // 摒弃 GET 路径，改用 Body 传输键名
+      body: JSON.stringify(["GET", key]),
     });
 
     if (!res.ok) {
@@ -199,12 +199,18 @@ async function cloudDBGet(key: string): Promise<string | null> {
       );
       return null;
     }
-    const json = await res.json();
-    console.log(
-      `[Chef Cloud] 🔍 查询键名 [${key}] 结果:`,
-      json.result ? "成功命中缓存 ✨" : "未命中缓存 ❌",
-    );
-    return json.result || null;
+    const text = await res.text();
+    // ⚠️ 增加一层防呆：尝试捕获并安全解析 Upstash 返回的大型结果
+    try {
+      const json = JSON.parse(text);
+      if (json.result) {
+        console.log(`[Chef Cloud] 🔍 成功命中缓存 ✨`);
+        return json.result;
+      }
+    } catch (e) {
+      console.warn("JSON解析警告，后备读取: ", e);
+    }
+    return null;
   } catch (e) {
     console.error("[Chef Cloud] 读取网络异常:", e);
     return null;
@@ -849,19 +855,19 @@ export const useChatStore = createPersistStore(
                   });
 
                   requestZImageTurbo(imagePrompt)
-                    .then((imageUrl) => {
+                    .then(async (imageUrl) => {
                       if (typeof botMessage.content === "string") {
                         botMessage.content = botMessage.content.replace(
                           loadingText,
                           `\n\n### 🧑‍🍳 菜品效果图\n![${cleanContent}](${imageUrl})`,
                         );
 
-                        // ============ 【线上全通用设计】第三关：大功告成，全量发布到云端公共记忆库 ============
+                        // ============ 【线上全通用设计】第三关 ============
                         const dishKey = `chef:dish:${cleanContent
                           .toLowerCase()
                           .trim()}`;
-                        cloudDBSet(dishKey, botMessage.content);
-                        // ===================================================================
+                        await cloudDBSet(dishKey, botMessage.content);
+                        // ===============================================
                       }
                       get().updateTargetSession(session, (s) => {
                         s.messages = s.messages.concat();
