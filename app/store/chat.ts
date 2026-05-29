@@ -170,31 +170,39 @@ async function decryptText(
   }
 }
 
-// 5. 云端通用万能读接口 (HTTP REST)
+// 5. 云端通用万能读接口 (统一改为更安全的 POST 数组请求法)
 async function cloudDBGet(key: string): Promise<string | null> {
   if (!UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_URL.includes("这里填入"))
     return null;
   try {
-    const res = await fetch(
-      `${UPSTASH_REDIS_REST_URL.replace(/\/$/, "")}/get/${encodeURIComponent(
-        key,
-      )}`,
-      {
-        headers: { Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}` },
+    const baseUrl = UPSTASH_REDIS_REST_URL.replace(/\/$/, "");
+    const res = await fetch(baseUrl, {
+      method: "POST", // 统一用 POST，避免中文 URL 被错误转码
+      headers: {
+        Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
+        "Content-Type": "application/json",
       },
-    );
-    if (!res.ok) return null;
+      body: JSON.stringify(["GET", key]),
+    });
+
+    if (!res.ok) {
+      // 把静默失败暴露出来，方便你 F12 看控制台抓虫
+      console.error(
+        `[CloudDB 读取故障] HTTP ${res.status}: `,
+        await res.text(),
+      );
+      return null;
+    }
+
     const json = await res.json();
     return json.result || null;
   } catch (e) {
-    console.error("[CloudDB 故障]", e);
+    console.error("[CloudDB 网络故障]", e);
     return null;
   }
 }
-// ===================================================================
 
-// ==================== 专属大厨：统一数据寿命控制引擎（TTL） ====================
-
+// 6. 云端通用写入接口 (增加详细的错误暴露)
 async function cloudDBSet(
   key: string,
   value: string,
@@ -204,12 +212,8 @@ async function cloudDBSet(
     return false;
   try {
     const baseUrl = UPSTASH_REDIS_REST_URL.replace(/\/$/, "");
-
-    // 构建标准的 Redis REST 数组命令格式
     const command = ["SET", key, value];
-    if (ttlInSeconds) {
-      command.push("EX", ttlInSeconds.toString());
-    }
+    if (ttlInSeconds) command.push("EX", ttlInSeconds.toString());
 
     const res = await fetch(baseUrl, {
       method: "POST",
@@ -217,16 +221,24 @@ async function cloudDBSet(
         Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(command), // 变成大字符串安全传输
+      body: JSON.stringify(command),
     });
-    return res.ok;
+
+    if (!res.ok) {
+      console.error(
+        `[CloudDB 写入故障] HTTP ${res.status}: `,
+        await res.text(),
+      );
+      return false;
+    }
+    return true;
   } catch (e) {
-    console.error("[CloudDB 写入故障]", e);
+    console.error("[CloudDB 网络故障]", e);
     return false;
   }
 }
 
-// 新增续期接口：用于激活“热数据”的生命周期
+// 7.用于激活“热数据”的生命周期
 async function cloudDBExpire(key: string, ttlInSeconds: number): Promise<void> {
   if (!UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_URL.includes("这里填入"))
     return;
