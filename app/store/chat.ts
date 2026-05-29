@@ -98,71 +98,6 @@ async function requestZImageTurbo(prompt: string): Promise<string> {
 }
 // ===================================================================
 
-// ==================== 专属大厨：IndexedDB 记忆与喜好引擎 ====================
-const CHEF_DB_NAME = "ChefChefMemory";
-const CHEF_STORE_NAME = "dish_caches";
-
-// 初始化或打开本地大厨数据库
-function openChefDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(CHEF_DB_NAME, 1);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(CHEF_STORE_NAME)) {
-        db.createObjectStore(CHEF_STORE_NAME, { keyPath: "dishName" });
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-// 记忆读取：根据菜名检索本地是否有现成的精美成果
-async function getRecipeFromMemory(
-  dishName: string,
-): Promise<{ content: string } | null> {
-  try {
-    const db = await openChefDB();
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction(CHEF_STORE_NAME, "readonly");
-      const store = transaction.objectStore(CHEF_STORE_NAME);
-      const request = store.get(dishName.toLowerCase().trim());
-      request.onsuccess = () => resolve(request.result || null);
-      request.onerror = () => reject(request.error);
-    });
-  } catch (e) {
-    console.error("[Chef Memory] 读取缓存失败:", e);
-    return null;
-  }
-}
-
-// 记忆写入：将生成完美的 食谱+图片 归档入库
-async function saveRecipeToMemory(
-  dishName: string,
-  fullContent: string,
-): Promise<void> {
-  try {
-    const db = await openChefDB();
-    return new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction(CHEF_STORE_NAME, "readwrite");
-      const store = transaction.objectStore(CHEF_STORE_NAME);
-      const request = store.put({
-        dishName: dishName.toLowerCase().trim(),
-        content: fullContent,
-        updatedAt: Date.now(),
-      });
-      request.onsuccess = () => {
-        console.log(`[Chef Memory] 已成功将 【${dishName}】 录入本地厨房记忆`);
-        resolve();
-      };
-      request.onerror = () => reject(request.error);
-    });
-  } catch (e) {
-    console.error("[Chef Memory] 写入缓存失败:", e);
-  }
-}
-// ===================================================================
-
 // ==================== 专属大厨：Upstash 线上云数据库与统一加解密引擎 ====================
 
 // 1. 白嫖配置区
@@ -196,7 +131,11 @@ async function encryptText(text: string, password: string): Promise<string> {
     key,
     enc.encode(text),
   );
-  return btoa(String.fromCharCode(...new Uint8Array(encrypted)));
+  const bytes = new Uint8Array(encrypted);
+  const binaryStr = Array.from(bytes)
+    .map((b) => String.fromCharCode(b))
+    .join("");
+  return btoa(binaryStr);
 }
 
 // 4. 原生高级解密标准：AES-GCM 文本解密
@@ -701,35 +640,36 @@ export const useChatStore = createPersistStore(
         // ============ 【线上全通用设计】第一关：线上全局通用记忆拦截 ============
         if (match && isChefMode) {
           // 云端全局大统一：所有人或任意设备只要生成过这道菜，就可被瞬间通杀击中
-          const globalCloudMemory = await cloudDBGet(
-            `chef:dish:${cleanContent.toLowerCase().trim()}`,
-          );
-          if (globalCloudMemory) {
-            console.log(
-              `[Chef Cloud] ⚡ 线上云端数据库成功击中 【${cleanContent}】 的通用厨房记忆！`,
+          const hasCustomPrefs = !!inlinePreference;
+          if (!hasCustomPrefs) {
+            const globalCloudMemory = await cloudDBGet(
+              `chef:dish:${cleanContent.toLowerCase().trim()}`,
             );
+            if (globalCloudMemory) {
+              console.log(
+                `[Chef Cloud] ⚡ 线上云端数据库成功击中 【${cleanContent}】 的通用厨房记忆！`,
+              );
 
-            const memoMessage = createMessage({
-              role: "assistant",
-              content: globalCloudMemory,
-              streaming: false,
-              model: modelConfig.model,
-              date: new Date().toLocaleString(),
-            });
+              const memoMessage = createMessage({
+                role: "assistant",
+                content: globalCloudMemory,
+                streaming: false,
+                model: modelConfig.model,
+                date: new Date().toLocaleString(),
+              });
 
-            get().updateTargetSession(session, (session) => {
-              session.messages = session.messages.concat([
-                createMessage({ role: "user", content: content }),
-                memoMessage,
-              ]);
-            });
-            get().onNewMessage(memoMessage, session);
-            const dishKey = `chef:dish:${cleanContent.toLowerCase().trim()}`;
-            // 只要被任意用户再次点中，公共菜谱记忆立刻重新刷新 30 天寿命（30 * 86400 秒）
-            cloudDBExpire(dishKey, 2592000);
-
-            get().onNewMessage(memoMessage, session);
-            return; // 强行熔断后续大模型和生图请求，极度省钱、全网通用！
+              get().updateTargetSession(session, (session) => {
+                session.messages = session.messages.concat([
+                  createMessage({ role: "user", content: content }),
+                  memoMessage,
+                ]);
+              });
+              get().onNewMessage(memoMessage, session);
+              const dishKey = `chef:dish:${cleanContent.toLowerCase().trim()}`;
+              // 只要被任意用户再次点中，公共菜谱记忆立刻重新刷新 30 天寿命（30 * 86400 秒）
+              cloudDBExpire(dishKey, 2592000);
+              return; // 强行熔断后续大模型和生图请求，极度省钱、全网通用！
+            }
           }
         }
         // ===================================================================
@@ -1217,7 +1157,9 @@ export const useChatStore = createPersistStore(
               providerName,
             },
             onUpdate(message) {
-              session.memoryPrompt = message;
+              get().updateTargetSession(session, (session) => {
+                session.memoryPrompt = message;
+              });
             },
             onFinish(message, responseRes) {
               if (responseRes?.status === 200) {
