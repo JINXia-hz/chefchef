@@ -617,7 +617,7 @@ export const useChatStore = createPersistStore(
 
         // 1. 超强指令解析器：支持剥离 【菜名描述】、【密码私钥】、【动态口味喜好】
         const generateRegex =
-          /^(G·|\/生成)\s*(.+?)(?:\s+(?:密码|key|p)[:：](\S+))?(?:\s+(?:偏好|喜好|pref)[:：](\S+))?$/i;
+          /^(G·|\/生成)\s*(.+?)(?:\s+(?:密码|key|p)[:：](\S+))?(?:\s+(?:偏好|喜好|pref)[:：](.+?))?\s*$/i;
         const match = content.trim().match(generateRegex);
 
         const hasChefContext = session.messages.some(
@@ -640,8 +640,8 @@ export const useChatStore = createPersistStore(
         // ============ 【线上全通用设计】第一关：线上全局通用记忆拦截 ============
         if (match && isChefMode) {
           // 云端全局大统一：所有人或任意设备只要生成过这道菜，就可被瞬间通杀击中
-          const hasCustomPrefs = !!inlinePreference;
-          if (!hasCustomPrefs) {
+          const isRequestingCustom = !!inlinePreference || !!userPassword;
+          if (!isRequestingCustom) {
             const globalCloudMemory = await cloudDBGet(
               `chef:dish:${cleanContent.toLowerCase().trim()}`,
             );
