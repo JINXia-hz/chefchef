@@ -60,7 +60,12 @@ async function handle(
   newHeaders.delete("content-encoding");
   newHeaders.set("Cache-Control", "no-store, no-cache, must-revalidate");
 
-  return new Response(fetchResult.body, {
+  // 🛑 核心修复 3：先将响应完整读成纯文本，再构建 Response。
+  // 直接透传 ReadableStream 在 Edge Runtime 中可能因流生命周期问题
+  // 导致 GET /set 正常但 GET /get 返回空或格式异常，最终体现为"相同菜名读不到云端记忆"。
+  const responseText = await fetchResult.text();
+
+  return new Response(responseText, {
     status: fetchResult.status,
     statusText: fetchResult.statusText,
     headers: newHeaders,

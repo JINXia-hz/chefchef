@@ -210,7 +210,12 @@ async function cloudDBGet(key: string): Promise<string | null> {
       cache: "no-store", // 🛑 核心修复 3：禁止浏览器偷偷走磁盘缓存
     });
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.error(
+        `[Chef Cloud] ❌ 代理路由返回非 200 状态: HTTP ${res.status}, 键名: [${key}]`,
+      );
+      return null;
+    }
 
     const json = await res.json();
     if (json.error) {
@@ -219,7 +224,9 @@ async function cloudDBGet(key: string): Promise<string | null> {
     }
 
     if (json.result) {
-      console.log(`[Chef Cloud] 🔍 成功命中厨房通用记忆库！原始键名: [${key}]`);
+      console.log(
+        `[Chef Cloud] 🔍 成功命中厨房通用记忆库！原始键名: [${key}], 返回长度: ${json.result.length}`,
+      );
 
       // 🛑 核心修复 4：消除存入时 JSON.stringify 带来的多余双引号
       try {
@@ -230,6 +237,11 @@ async function cloudDBGet(key: string): Promise<string | null> {
       }
       return json.result;
     }
+
+    // json.result 为 null —— 键确实不存在
+    console.log(
+      `[Chef Cloud] 🔎 云端未找到键 [${key}]，该菜谱尚未被任何人生成过。`,
+    );
     return null;
   } catch (e) {
     console.error("[Chef Cloud] 读取网络异常:", e);
@@ -911,27 +923,58 @@ export const useChatStore = createPersistStore(
                         const dishKey = `chef:dish:${cleanContent
                           .toLowerCase()
                           .trim()}`;
-                        await cloudDBSet(dishKey, botMessage.content);
-                        ACTIVE_COOKING_LOCKS.delete(dishKey); // 🔓 解锁
-                        showToast(
-                          "💾 菜品效果图已拍摄完毕，通用记忆已安全落盘！",
+                        const writeOk = await cloudDBSet(
+                          dishKey,
+                          botMessage.content,
                         );
+                        ACTIVE_COOKING_LOCKS.delete(dishKey); // 🔓 解锁
+
+                        if (writeOk) {
+                          showToast(
+                            "💾 菜品效果图已拍摄完毕，通用记忆已安全落盘！",
+                          );
+                        } else {
+                          console.error(
+                            `[Chef Cloud] ❌ 写入返回 false，键名: [${dishKey}]`,
+                          );
+                          showToast(
+                            "⚠️ 云端写入失败，本次结果仅保留在本地会话中。",
+                          );
+                        }
                         // ===============================================
                       }
                       get().updateTargetSession(session, (s) => {
                         s.messages = s.messages.concat();
                       });
                     })
-                    .catch((err) => {
+                    .catch(async (err) => {
                       console.error("[Chef Mode] 生图失败: ", err);
-                      ACTIVE_COOKING_LOCKS.delete(currentDishKey);
-                      showToast("❌ 美食效果图拍摄失败！锁已释放。");
+                      const dishKey = `chef:dish:${cleanContent
+                        .toLowerCase()
+                        .trim()}`;
+                      ACTIVE_COOKING_LOCKS.delete(dishKey);
+
+                      // 🔧 降级存储：图片虽然失败，但菜谱文本已经生成，
+                      // 将不含图片占位符的纯菜谱落盘，避免浪费 LLM 成本。
                       if (typeof botMessage.content === "string") {
+                        const recipeOnly = botMessage.content.replace(
+                          loadingText,
+                          "",
+                        );
                         botMessage.content = botMessage.content.replace(
                           loadingText,
                           `\n\n❌ *[图片生成失败]: ${err.message || err}*`,
                         );
+
+                        const writeOk = await cloudDBSet(dishKey, recipeOnly);
+                        if (writeOk) {
+                          console.log(
+                            `[Chef Cloud] ⚠️ 图片失败但菜谱已降级落盘，键名: [${dishKey}]`,
+                          );
+                        }
                       }
+
+                      showToast("❌ 美食效果图拍摄失败！锁已释放。");
                       get().updateTargetSession(session, (s) => {
                         s.messages = s.messages.concat();
                       });
