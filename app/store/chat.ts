@@ -179,19 +179,16 @@ async function decryptText(
   }
 }
 
-// ==================== 专属大厨：本地代理与全英文化哈希引擎重构 ====================
+/// ==================== 专属大厨：本地代理与安全序列化引擎 ====================
 
-// 5. 云端通用万能读接口（改用安全的本地代理路由 + 纯英文字符键名）
+// 5. 云端通用万能读接口
 async function cloudDBGet(key: string): Promise<string | null> {
   const endpoint = "https://alert-possum-79616.upstash.io";
   const token =
     "gQAAAAAAATcAAAIgcDIzNzUwOGYwYjNhMTQ0NTc2OTVkMjU4NGNjZDlmMmIxZAN";
 
   try {
-    // ⚠️ 核心修正 1：将包含中文和冒号的危险 key 转换为纯英文数字的 SHA-256 哈希，防止 URL 路径组件解析乱码
     const safeKey = await hashPassword(key);
-
-    // ⚠️ 核心修正 2：走项目自带的 Next.js 服务端代理路由，彻底根治国内网络被墙和前端跨域 (CORS) 问题
     const localProxyUrl = `/api/upstash/get/${safeKey}?endpoint=${encodeURIComponent(
       endpoint,
     )}`;
@@ -214,45 +211,50 @@ async function cloudDBGet(key: string): Promise<string | null> {
       return null;
     }
 
-    console.log(
-      `[Chef Cloud] 🔍 查询原始键名 [${key}] (安全哈希: ${safeKey.substring(
-        0,
-        8,
-      )}) 结果:`,
-      json.result ? "成功命中缓存 ✨" : "未命中缓存 ❌",
-    );
-    return json.result || null;
+    if (json.result) {
+      // ⚠️ 核心修正：尝试解开 JSON 安全编码，完美还原大厨 Markdown 文本
+      try {
+        return JSON.parse(json.result);
+      } catch (e) {
+        return json.result; // 后备方案：如果原本存的是非标准 JSON，直接返回原值
+      }
+    }
+
+    console.log(`[Chef Cloud] 🔍 查询原始键名 [${key}] 结果: 未命中缓存 ❌`);
+    return null;
   } catch (e) {
     console.error("[Chef Cloud] 读取网络代理异常:", e);
     return null;
   }
 }
 
-// 6. 云端通用万能写接口（改用安全的本地代理路由 + 纯英文字符键名）
+// 6. 云端通用万能写接口
 async function cloudDBSet(
   key: string,
   value: string,
-  ttlInSeconds?: number, // 由于内置路由限制为纯路径转发，在此忽略多余参数
+  ttlInSeconds?: number,
 ): Promise<boolean> {
   const endpoint = "https://alert-possum-79616.upstash.io";
   const token =
     "gQAAAAAAATcAAAIgcDIzNzUwOGYwYjNhMTQ0NTc2OTVkMjU4NGNjZDlmMmIxZAN";
 
   try {
-    // ⚠️ 核心修正 1：同样转换为纯英文数字哈希
     const safeKey = await hashPassword(key);
-
-    // ⚠️ 核心修正 2：走项目自带的服务端代理路由
     const localProxyUrl = `/api/upstash/set/${safeKey}?endpoint=${encodeURIComponent(
       endpoint,
     )}`;
+
+    // ⚠️ 核心修正：必须对包含换行符、特殊 Markdown 标记的 raw text 进行 JSON 序列化！
+    // 消除所有原生换行符和控制字符，确保通过代理流转发时 100% 完整不破损
+    const safeBody = JSON.stringify(value);
 
     const res = await fetch(localProxyUrl, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
       },
-      body: value, // 内置代理会将 body 原封不动转发给 Upstash 的标准 POST /set/key 接口
+      body: safeBody,
     });
 
     if (!res.ok) {
@@ -260,12 +262,13 @@ async function cloudDBSet(
       return false;
     }
 
-    console.log(
-      `[Chef Cloud] 💾 成功将 [${key}] (安全哈希: ${safeKey.substring(
-        0,
-        8,
-      )}) 同步至云端记忆库！`,
-    );
+    const json = await res.json();
+    if (json.error) {
+      console.error(`[Chef Cloud] ❌ Upstash 写入业务报错:`, json.error);
+      return false;
+    }
+
+    console.log(`[Chef Cloud] 💾 成功将 [${key}] 同步至云端记忆库！`);
     return true;
   } catch (e) {
     console.error("[Chef Cloud] 写入网络代理异常:", e);
@@ -273,11 +276,10 @@ async function cloudDBSet(
   }
 }
 
-// 7. 新增续期接口（由于内置代理严格限制了非 get/set 的操作，此处置空防报错）
+// 7. 新增续期接口
 async function cloudDBExpire(key: string, ttlInSeconds: number): Promise<void> {
-  // 保持空函数，防止线上调用触发 403 异常中断主业务流程
+  // 保持置空，防止触发项目内置代理路由的 403 阻断
 }
-// ===================================================================
 // ===================================================================
 
 export type ChatMessageTool = {
