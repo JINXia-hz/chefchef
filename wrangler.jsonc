@@ -1,12 +1,12 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "chefchef",
+  "main": ".vercel/output/static/_worker.js/index.js",
   "compatibility_date": "2026-05-29",
-  "pages_build_output_dir": ".vercel/output/static",
-  "observability": {
-    "enabled": true
-  },
   "compatibility_flags": [
     "nodejs_compat"
-  ]
+  ],
+  "assets": {
+    "directory": ".vercel/output/static"
+  }
 }

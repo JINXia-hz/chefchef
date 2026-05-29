@@ -44,7 +44,7 @@ const localStorage = safeLocalStorage();
 
 // 1. Z-Image-Turbo 凭证配置
 const Z_IMAGE_TURBO_KEY = "sk-skdheazwxwwqiojygsocsnkjtzdxuxgsljovfdlkpztyyhfg";
-const Z_IMAGE_TURBO_URL = "https://api.siliconflow.cn/v1/images/generations"; 
+const Z_IMAGE_TURBO_URL = "https://api.siliconflow.cn/v1/images/generations";
 
 // 2. 主厨系统提示词
 const CHEF_SYSTEM_PROMPT = `你是一个顶级的星级主厨和 AI 图像提示词专家。
@@ -62,13 +62,15 @@ async function requestZImageTurbo(prompt: string): Promise<string> {
   // 自动格式化 base url
   const baseUrl = Z_IMAGE_TURBO_URL.replace(/\/$/, "");
   // 如果你的接口地址本身包含了完整路径，就直接用；否则拼接标准的 /v1/images/generations
-  const path = baseUrl.includes("/v1/") ? baseUrl : `${baseUrl}/v1/images/generations`;
+  const path = baseUrl.includes("/v1/")
+    ? baseUrl
+    : `${baseUrl}/v1/images/generations`;
 
   const response = await fetch(path, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${Z_IMAGE_TURBO_KEY}`,
+      Authorization: `Bearer ${Z_IMAGE_TURBO_KEY}`,
     },
     body: JSON.stringify({
       model: "Tongyi-MAI/Z-Image-Turbo",
@@ -80,13 +82,15 @@ async function requestZImageTurbo(prompt: string): Promise<string> {
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Z-Image-Turbo 请求失败: ${response.status} - ${errorText}`);
+    throw new Error(
+      `Z-Image-Turbo 请求失败: ${response.status} - ${errorText}`,
+    );
   }
 
   const resJson = await response.json();
   // 自动兼容标准 OpenAI 格式 { data: [{ url: "..." }] } 或直接返回 { url: "..." }
   const imageUrl = resJson?.data?.[0]?.url || resJson?.url || resJson?.image;
-  
+
   if (!imageUrl) {
     throw new Error("接口未返回有效的图片字段，请检查控制台返回的 JSON 结构");
   }
@@ -114,7 +118,9 @@ function openChefDB(): Promise<IDBDatabase> {
 }
 
 // 记忆读取：根据菜名检索本地是否有现成的精美成果
-async function getRecipeFromMemory(dishName: string): Promise<{ content: string } | null> {
+async function getRecipeFromMemory(
+  dishName: string,
+): Promise<{ content: string } | null> {
   try {
     const db = await openChefDB();
     return new Promise((resolve, reject) => {
@@ -131,7 +137,10 @@ async function getRecipeFromMemory(dishName: string): Promise<{ content: string 
 }
 
 // 记忆写入：将生成完美的 食谱+图片 归档入库
-async function saveRecipeToMemory(dishName: string, fullContent: string): Promise<void> {
+async function saveRecipeToMemory(
+  dishName: string,
+  fullContent: string,
+): Promise<void> {
   try {
     const db = await openChefDB();
     return new Promise<void>((resolve, reject) => {
@@ -157,35 +166,65 @@ async function saveRecipeToMemory(dishName: string, fullContent: string): Promis
 // ==================== 专属大厨：Upstash 线上云数据库与统一加解密引擎 ====================
 
 // 1. 白嫖配置区
-const UPSTASH_REDIS_REST_URL ="https://alert-possum-79616.upstash.io";
-const UPSTASH_REDIS_REST_TOKEN = "gQAAAAAAATcAAAIgcDIzNzUwOGYwYjNhMTQ0NTc2OTVkMjU4NGNjZDlmMmIxZAN";
+const UPSTASH_REDIS_REST_URL = "https://alert-possum-79616.upstash.io";
+const UPSTASH_REDIS_REST_TOKEN =
+  "gQAAAAAAATcAAAIgcDIzNzUwOGYwYjNhMTQ0NTc2OTVkMjU4NGNjZDlmMmIxZAN";
 
 // 2. 原生高效密码学：SHA-256 哈希计算（用于把用户密码转换成唯一的云端匿名 UserID）
 async function hashPassword(text: string): Promise<string> {
   const msgBuffer = new TextEncoder().encode(text.trim());
   const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
-  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 // 3. 原生高级加密标准：AES-GCM 文本加密
 async function encryptText(text: string, password: string): Promise<string> {
   const enc = new TextEncoder();
   const pwHash = await crypto.subtle.digest("SHA-256", enc.encode(password));
-  const key = await crypto.subtle.importKey("raw", pwHash, { name: "AES-GCM" }, false, ["encrypt"]);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    pwHash,
+    { name: "AES-GCM" },
+    false,
+    ["encrypt"],
+  );
   const iv = enc.encode(password.substring(0, 12).padStart(12, "0")); // 派生确定性IV简化存储
-  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, enc.encode(text));
+  const encrypted = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    key,
+    enc.encode(text),
+  );
   return btoa(String.fromCharCode(...new Uint8Array(encrypted)));
 }
 
 // 4. 原生高级解密标准：AES-GCM 文本解密
-async function decryptText(cipherBase64: string, password: string): Promise<string> {
+async function decryptText(
+  cipherBase64: string,
+  password: string,
+): Promise<string> {
   try {
     const enc = new TextEncoder();
     const pwHash = await crypto.subtle.digest("SHA-256", enc.encode(password));
-    const key = await crypto.subtle.importKey("raw", pwHash, { name: "AES-GCM" }, false, ["decrypt"]);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      pwHash,
+      { name: "AES-GCM" },
+      false,
+      ["decrypt"],
+    );
     const iv = enc.encode(password.substring(0, 12).padStart(12, "0"));
-    const encryptedBytes = new Uint8Array(atob(cipherBase64).split("").map(c => c.charCodeAt(0)));
-    const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, encryptedBytes);
+    const encryptedBytes = new Uint8Array(
+      atob(cipherBase64)
+        .split("")
+        .map((c) => c.charCodeAt(0)),
+    );
+    const decrypted = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv },
+      key,
+      encryptedBytes,
+    );
     return new TextDecoder().decode(decrypted);
   } catch (e) {
     return "⚠️ [解密失败] 您的私钥/密码似乎不正确，无法读取历史偏好。";
@@ -194,11 +233,17 @@ async function decryptText(cipherBase64: string, password: string): Promise<stri
 
 // 5. 云端通用万能读接口 (HTTP REST)
 async function cloudDBGet(key: string): Promise<string | null> {
-  if (!UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_URL.includes("这里填入")) return null;
+  if (!UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_URL.includes("这里填入"))
+    return null;
   try {
-    const res = await fetch(`${UPSTASH_REDIS_REST_URL.replace(/\/$/, "")}/get/${encodeURIComponent(key)}`, {
-      headers: { Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}` }
-    });
+    const res = await fetch(
+      `${UPSTASH_REDIS_REST_URL.replace(/\/$/, "")}/get/${encodeURIComponent(
+        key,
+      )}`,
+      {
+        headers: { Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}` },
+      },
+    );
     if (!res.ok) return null;
     const json = await res.json();
     return json.result || null;
@@ -211,11 +256,16 @@ async function cloudDBGet(key: string): Promise<string | null> {
 
 // ==================== 专属大厨：统一数据寿命控制引擎（TTL） ====================
 
-async function cloudDBSet(key: string, value: string, ttlInSeconds?: number): Promise<boolean> {
-  if (!UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_URL.includes("这里填入")) return false;
+async function cloudDBSet(
+  key: string,
+  value: string,
+  ttlInSeconds?: number,
+): Promise<boolean> {
+  if (!UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_URL.includes("这里填入"))
+    return false;
   try {
     const baseUrl = UPSTASH_REDIS_REST_URL.replace(/\/$/, "");
-    
+
     // 构建标准的 Redis REST 数组命令格式
     const command = ["SET", key, value];
     if (ttlInSeconds) {
@@ -224,9 +274,9 @@ async function cloudDBSet(key: string, value: string, ttlInSeconds?: number): Pr
 
     const res = await fetch(baseUrl, {
       method: "POST",
-      headers: { 
-        "Authorization": `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
-        "Content-Type": "application/json"
+      headers: {
+        Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
+        "Content-Type": "application/json",
       },
       body: JSON.stringify(command), // 变成大字符串安全传输
     });
@@ -239,12 +289,18 @@ async function cloudDBSet(key: string, value: string, ttlInSeconds?: number): Pr
 
 // 新增续期接口：用于激活“热数据”的生命周期
 async function cloudDBExpire(key: string, ttlInSeconds: number): Promise<void> {
-  if (!UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_URL.includes("这里填入")) return;
+  if (!UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_URL.includes("这里填入"))
+    return;
   try {
     // 异步发送 EXPIRE 指令，让 Redis 重新计时，前端无需等待其返回
-    fetch(`${UPSTASH_REDIS_REST_URL.replace(/\/$/, "")}/expire/${encodeURIComponent(key)}/${ttlInSeconds}`, {
-      headers: { Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}` }
-    }).catch(() => {});
+    fetch(
+      `${UPSTASH_REDIS_REST_URL.replace(/\/$/, "")}/expire/${encodeURIComponent(
+        key,
+      )}/${ttlInSeconds}`,
+      {
+        headers: { Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}` },
+      },
+    ).catch(() => {});
   } catch (e) {}
 }
 // ===================================================================
@@ -621,11 +677,14 @@ export const useChatStore = createPersistStore(
         const modelConfig = session.mask.modelConfig;
 
         // 1. 超强指令解析器：支持剥离 【菜名描述】、【密码私钥】、【动态口味喜好】
-        const generateRegex = /^(G·|\/生成)\s*(.+?)(?:\s+(?:密码|key|p)[:：](\S+))?(?:\s+(?:偏好|喜好|pref)[:：](\S+))?$/i;
+        const generateRegex =
+          /^(G·|\/生成)\s*(.+?)(?:\s+(?:密码|key|p)[:：](\S+))?(?:\s+(?:偏好|喜好|pref)[:：](\S+))?$/i;
         const match = content.trim().match(generateRegex);
-        
+
         const hasChefContext = session.messages.some(
-          (m) => m.role === "assistant" && getMessageTextContent(m).includes("---RECIPE---")
+          (m) =>
+            m.role === "assistant" &&
+            getMessageTextContent(m).includes("---RECIPE---"),
         );
         const isChefMode = !!match || hasChefContext;
 
@@ -634,18 +693,22 @@ export const useChatStore = createPersistStore(
         let inlinePreference = "";
 
         if (match) {
-          cleanContent = match[2].trim();     // 干净的菜名
-          userPassword = match[3] || "";     // 用户自记的私钥密码
+          cleanContent = match[2].trim(); // 干净的菜名
+          userPassword = match[3] || ""; // 用户自记的私钥密码
           inlinePreference = match[4] || ""; // 本次指定的临时/更新喜好
         }
 
         // ============ 【线上全通用设计】第一关：线上全局通用记忆拦截 ============
         if (match && isChefMode) {
           // 云端全局大统一：所有人或任意设备只要生成过这道菜，就可被瞬间通杀击中
-          const globalCloudMemory = await cloudDBGet(`chef:dish:${cleanContent.toLowerCase().trim()}`);
+          const globalCloudMemory = await cloudDBGet(
+            `chef:dish:${cleanContent.toLowerCase().trim()}`,
+          );
           if (globalCloudMemory) {
-            console.log(`[Chef Cloud] ⚡ 线上云端数据库成功击中 【${cleanContent}】 的通用厨房记忆！`);
-            
+            console.log(
+              `[Chef Cloud] ⚡ 线上云端数据库成功击中 【${cleanContent}】 的通用厨房记忆！`,
+            );
+
             const memoMessage = createMessage({
               role: "assistant",
               content: globalCloudMemory,
@@ -663,7 +726,7 @@ export const useChatStore = createPersistStore(
             get().onNewMessage(memoMessage, session);
             const dishKey = `chef:dish:${cleanContent.toLowerCase().trim()}`;
             // 只要被任意用户再次点中，公共菜谱记忆立刻重新刷新 30 天寿命（30 * 86400 秒）
-            cloudDBExpire(dishKey, 2592000); 
+            cloudDBExpire(dishKey, 2592000);
 
             get().onNewMessage(memoMessage, session);
             return; // 强行熔断后续大模型和生图请求，极度省钱、全网通用！
@@ -678,7 +741,9 @@ export const useChatStore = createPersistStore(
 
         if (!isMcpResponse && attachImages && attachImages.length > 0) {
           mContent = [
-            ...(cleanContent ? [{ type: "text" as const, text: cleanContent }] : []),
+            ...(cleanContent
+              ? [{ type: "text" as const, text: cleanContent }]
+              : []),
             ...attachImages.map((url) => ({
               type: "image_url" as const,
               image_url: { url },
@@ -700,14 +765,14 @@ export const useChatStore = createPersistStore(
 
         const recentMessages = await get().getMessagesWithMemory();
         let sendMessages = recentMessages.concat(userMessage);
-        
+
         // ============ 【线上全通用设计】第二关：解密用户隐私并在 LLM 之前织入 ============
         if (isChefMode) {
           let finalPreferences = "无特殊过敏源和饮食限制";
-          
+
           // 定义用户隐私偏好的数据寿命（例如：604800 秒 = 7 天）
           // 7 天内如果没有更新，云端会自动无痕清除该用户的喜好历史
-          const USER_PREF_TTL = 604800; 
+          const USER_PREF_TTL = 604800;
 
           if (userPassword) {
             const anonymityUserID = await hashPassword(userPassword);
@@ -716,23 +781,37 @@ export const useChatStore = createPersistStore(
             // 情况 A：用户提示词里带了新喜好 -> 立刻加密同步上云，并注入 TTL 开启倒计时
             if (inlinePreference) {
               finalPreferences = inlinePreference;
-              const encryptedPrefs = await encryptText(inlinePreference, userPassword);
-              
+              const encryptedPrefs = await encryptText(
+                inlinePreference,
+                userPassword,
+              );
+
               // 关键改动：传入 USER_PREF_TTL，让云端开始 7 天计时
               await cloudDBSet(userCloudKey, encryptedPrefs, USER_PREF_TTL);
-              console.log(`[Chef Cloud] 🔒 用户新偏好已通过 AES 加密上云，设定 ${USER_PREF_TTL / 86400} 天后自动清除。`);
-            } 
+              console.log(
+                `[Chef Cloud] 🔒 用户新偏好已通过 AES 加密上云，设定 ${
+                  USER_PREF_TTL / 86400
+                } 天后自动清除。`,
+              );
+            }
             // 情况 B：没有输入新喜好 -> 自动去线上捞出历史偏好
             else {
               const encryptedCloudPrefs = await cloudDBGet(userCloudKey);
               if (encryptedCloudPrefs) {
-                finalPreferences = await decryptText(encryptedCloudPrefs, userPassword);
-                console.log("[Chef Cloud] 🔓 成功从云端读取并解密食客的历史口味画像。");
-                
+                finalPreferences = await decryptText(
+                  encryptedCloudPrefs,
+                  userPassword,
+                );
+                console.log(
+                  "[Chef Cloud] 🔓 成功从云端读取并解密食客的历史口味画像。",
+                );
+
                 // 【可选】如果你希望用户“只要一直在用，就别清除；连续 7 天不用才清除”，可以取消下面这行的注释（滚动续期）：
                 // cloudDBExpire(userCloudKey, USER_PREF_TTL);
               } else {
-                console.log("[Chef Cloud] ⏳ 偏好已过期清除或从未设置，本次采用默认无限制口味。");
+                console.log(
+                  "[Chef Cloud] ⏳ 偏好已过期清除或从未设置，本次采用默认无限制口味。",
+                );
               }
             }
           }
@@ -755,7 +834,7 @@ export const useChatStore = createPersistStore(
         get().updateTargetSession(session, (session) => {
           const savedUserMessage = {
             ...userMessage,
-            content: match ? match[0] + " " + cleanContent : mContent,
+            content: match ? match[0] : mContent,
           };
           session.messages = session.messages.concat([
             savedUserMessage,
@@ -764,7 +843,7 @@ export const useChatStore = createPersistStore(
         });
 
         const api: ClientApi = getClientApi(modelConfig.providerName);
-        
+
         api.llm.chat({
           messages: sendMessages,
           config: { ...modelConfig, stream: true },
@@ -785,19 +864,22 @@ export const useChatStore = createPersistStore(
               get().onNewMessage(botMessage, session);
 
               if (isChefMode) {
-                console.log("[Chef Mode] 第一个 LLM 响应结束，开始解析绘图提示词...");
+                console.log(
+                  "[Chef Mode] 第一个 LLM 响应结束，开始解析绘图提示词...",
+                );
                 const promptMatch = message.match(/---PROMPT---([\s\S]*)/i);
-                
+
                 if (promptMatch && promptMatch[1]) {
                   const imagePrompt = promptMatch[1].trim();
                   console.log("[Chef Mode] 提取到绘图提示词: ", imagePrompt);
-                  
-                  const loadingText = "\n\n⏱️ **美食主厨正在为您精心摆盘并拍摄精美效果图，请稍候...**";
-                  
+
+                  const loadingText =
+                    "\n\n⏱️ **美食主厨正在为您精心摆盘并拍摄精美效果图，请稍候...**";
+
                   if (typeof botMessage.content === "string") {
                     botMessage.content += loadingText;
                   }
-                  
+
                   get().updateTargetSession(session, (s) => {
                     s.messages = s.messages.concat();
                   });
@@ -807,11 +889,13 @@ export const useChatStore = createPersistStore(
                       if (typeof botMessage.content === "string") {
                         botMessage.content = botMessage.content.replace(
                           loadingText,
-                          `\n\n### 🧑‍🍳 菜品效果图\n![${cleanContent}](${imageUrl})`
+                          `\n\n### 🧑‍🍳 菜品效果图\n![${cleanContent}](${imageUrl})`,
                         );
-                        
+
                         // ============ 【线上全通用设计】第三关：大功告成，全量发布到云端公共记忆库 ============
-                        const dishKey = `chef:dish:${cleanContent.toLowerCase().trim()}`;
+                        const dishKey = `chef:dish:${cleanContent
+                          .toLowerCase()
+                          .trim()}`;
                         cloudDBSet(dishKey, botMessage.content);
                         // ===================================================================
                       }
@@ -824,7 +908,7 @@ export const useChatStore = createPersistStore(
                       if (typeof botMessage.content === "string") {
                         botMessage.content = botMessage.content.replace(
                           loadingText,
-                          `\n\n❌ *[图片生成失败]: ${err.message || err}*`
+                          `\n\n❌ *[图片生成失败]: ${err.message || err}*`,
                         );
                       }
                       get().updateTargetSession(session, (s) => {
