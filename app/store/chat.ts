@@ -105,7 +105,15 @@ const UPSTASH_REDIS_REST_URL = "https://alert-possum-79616.upstash.io";
 const UPSTASH_REDIS_REST_TOKEN =
   "gQAAAAAAATcAAAIgcDIzNzUwOGYwYjNhMTQ0NTc2OTVkMjU4NGNjZDlmMmIxZAN";
 
-// 2. 原生高效密码学：SHA-256 哈希计算（用于把用户密码转换成唯一的云端匿名 UserID）
+// 安全获取带尾斜杠的 URL，彻底避免 POST 被重定向降级为 GET
+function getCleanCloudUrl(): string {
+  if (!UPSTASH_REDIS_REST_URL) return "";
+  return UPSTASH_REDIS_REST_URL.endsWith("/")
+    ? UPSTASH_REDIS_REST_URL
+    : `${UPSTASH_REDIS_REST_URL}/`;
+}
+
+// 2. 原生高效密码学：SHA-256 哈希计算
 async function hashPassword(text: string): Promise<string> {
   const msgBuffer = new TextEncoder().encode(text.trim());
   const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
@@ -125,17 +133,17 @@ async function encryptText(text: string, password: string): Promise<string> {
     false,
     ["encrypt"],
   );
-  const iv = enc.encode(password.substring(0, 12).padStart(12, "0")); // 派生确定性IV简化存储
+  const iv = enc.encode(password.substring(0, 12).padStart(12, "0"));
   const encrypted = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv },
     key,
     enc.encode(text),
   );
-  const bytes = new Uint8Array(encrypted);
-  const binaryStr = Array.from(bytes)
-    .map((b) => String.fromCharCode(b))
-    .join("");
-  return btoa(binaryStr);
+  return btoa(
+    Array.from(new Uint8Array(encrypted))
+      .map((b) => String.fromCharCode(b))
+      .join(""),
+  );
 }
 
 // 4. 原生高级解密标准：AES-GCM 文本解密
@@ -170,50 +178,54 @@ async function decryptText(
   }
 }
 
-// 5. 云端通用万能读接口 (统一改为更安全的 POST 数组请求法)
+// 5. 云端通用万能读接口 (统一改为最安全的 POST 数组请求法)
 async function cloudDBGet(key: string): Promise<string | null> {
-  if (!UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_URL.includes("这里填入"))
-    return null;
+  const baseUrl = getCleanCloudUrl();
+  if (!baseUrl || baseUrl.includes("这里填入")) return null;
   try {
-    const baseUrl = UPSTASH_REDIS_REST_URL.replace(/\/$/, "");
     const res = await fetch(baseUrl, {
-      method: "POST", // 统一用 POST，避免中文 URL 被错误转码
+      method: "POST",
       headers: {
         Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(["GET", key]),
+      body: JSON.stringify(["GET", key]), // 摒弃 GET 路径，改用 Body 传输键名
     });
 
     if (!res.ok) {
-      // 把静默失败暴露出来，方便你 F12 看控制台抓虫
       console.error(
-        `[CloudDB 读取故障] HTTP ${res.status}: `,
+        `[Chef Cloud] ❌ 读取失败 HTTP ${res.status}:`,
         await res.text(),
       );
       return null;
     }
-
     const json = await res.json();
+    console.log(
+      `[Chef Cloud] 🔍 查询键名 [${key}] 结果:`,
+      json.result ? "成功命中缓存 ✨" : "未命中缓存 ❌",
+    );
     return json.result || null;
   } catch (e) {
-    console.error("[CloudDB 网络故障]", e);
+    console.error("[Chef Cloud] 读取网络异常:", e);
     return null;
   }
 }
 
-// 6. 云端通用写入接口 (增加详细的错误暴露)
+// ==================== 专属大厨：统一数据寿命控制引擎（TTL） ====================
+
+// 6. 云端通用万能写接口
 async function cloudDBSet(
   key: string,
   value: string,
   ttlInSeconds?: number,
 ): Promise<boolean> {
-  if (!UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_URL.includes("这里填入"))
-    return false;
+  const baseUrl = getCleanCloudUrl();
+  if (!baseUrl || baseUrl.includes("这里填入")) return false;
   try {
-    const baseUrl = UPSTASH_REDIS_REST_URL.replace(/\/$/, "");
     const command = ["SET", key, value];
-    if (ttlInSeconds) command.push("EX", ttlInSeconds.toString());
+    if (ttlInSeconds) {
+      command.push("EX", ttlInSeconds.toString());
+    }
 
     const res = await fetch(baseUrl, {
       method: "POST",
@@ -226,32 +238,32 @@ async function cloudDBSet(
 
     if (!res.ok) {
       console.error(
-        `[CloudDB 写入故障] HTTP ${res.status}: `,
+        `[Chef Cloud] ❌ 写入失败 HTTP ${res.status}:`,
         await res.text(),
       );
       return false;
     }
+    console.log(`[Chef Cloud] 💾 成功将 [${key}] 同步至云端记忆库！`);
     return true;
   } catch (e) {
-    console.error("[CloudDB 网络故障]", e);
+    console.error("[Chef Cloud] 写入网络异常:", e);
     return false;
   }
 }
 
-// 7.用于激活“热数据”的生命周期
+// 7. 新增续期接口
 async function cloudDBExpire(key: string, ttlInSeconds: number): Promise<void> {
-  if (!UPSTASH_REDIS_REST_URL || UPSTASH_REDIS_REST_URL.includes("这里填入"))
-    return;
+  const baseUrl = getCleanCloudUrl();
+  if (!baseUrl || baseUrl.includes("这里填入")) return;
   try {
-    // 异步发送 EXPIRE 指令，让 Redis 重新计时，前端无需等待其返回
-    fetch(
-      `${UPSTASH_REDIS_REST_URL.replace(/\/$/, "")}/expire/${encodeURIComponent(
-        key,
-      )}/${ttlInSeconds}`,
-      {
-        headers: { Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}` },
+    fetch(baseUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
+        "Content-Type": "application/json",
       },
-    ).catch(() => {});
+      body: JSON.stringify(["EXPIRE", key, ttlInSeconds.toString()]),
+    }).catch(() => {});
   } catch (e) {}
 }
 // ===================================================================
