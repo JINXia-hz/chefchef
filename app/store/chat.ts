@@ -228,28 +228,46 @@ async function cloudDBGet(key: string): Promise<string | null> {
   }
 }
 
-// 6. 云端通用万能写接口
-async function cloudDBSet(key: string, value: string): Promise<boolean> {
+// 6. 云端通用万能写接口（✨ 完美带回 ttlInSeconds，彻底拯救数据寿命控制与 Vercel 编译报错）
+async function cloudDBSet(
+  key: string,
+  value: string,
+  ttlInSeconds?: number, // 👈 重新焊死第三个参数：数据生存寿命（单位：秒）
+): Promise<boolean> {
   const endpoint = "https://alert-possum-79616.upstash.io";
   const token =
     "gQAAAAAAATcAAAIgcDIzNzUwOGYwYjNhMTQ0NTc2OTVkMjU4NGNjZDlmMmIxZAN";
 
   try {
     const safeKey = await sha256Key(key); // 转换为全英文哈希
-    const localProxyUrl = `/api/upstash/set/${safeKey}?endpoint=${encodeURIComponent(
+
+    // ⚠️ 核心修正：如果传入了 ttlInSeconds 寿命倒计时，将 EX 和秒数作为路径片段追加
+    // 这样通过 Next.js 的 params.key.join("/") 转发后，会完美变成 Upstash 官方标准的 /set/key/EX/seconds 格式
+    let pathSegments = safeKey;
+    if (ttlInSeconds) {
+      pathSegments += `/EX/${ttlInSeconds}`;
+    }
+
+    const localProxyUrl = `/api/upstash/set/${pathSegments}?endpoint=${encodeURIComponent(
       endpoint,
     )}`;
+
+    // 对包含换行符、特殊 Markdown 标记的菜谱文本进行 JSON 安全序列化
+    const safeBody = JSON.stringify(value);
 
     const res = await fetch(localProxyUrl, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
-        "Content-Type": "text/plain",
+        "Content-Type": "application/json",
       },
-      body: value, // 经过前面代理路由修复后，此处可直接安全发送 raw text 字符串
+      body: safeBody,
     });
 
-    if (!res.ok) return false;
+    if (!res.ok) {
+      console.error(`[Chef Cloud] ❌ 代理路由写入失败 HTTP ${res.status}`);
+      return false;
+    }
 
     const json = await res.json();
     if (json.error) {
@@ -257,7 +275,13 @@ async function cloudDBSet(key: string, value: string): Promise<boolean> {
       return false;
     }
 
-    console.log(`[Chef Cloud] 💾 成功将原始记忆 [${key}] 真正落盘至云端！`);
+    console.log(
+      `[Chef Cloud] 💾 成功将原始记忆 [${key}] 落盘至云端！生存期限: ${
+        ttlInSeconds
+          ? ttlInSeconds + " 秒 (" + (ttlInSeconds / 86400).toFixed(1) + " 天)"
+          : "永久"
+      }`,
+    );
     return true;
   } catch (e) {
     console.error("[Chef Cloud] 写入网络异常:", e);
