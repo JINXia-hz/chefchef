@@ -40,6 +40,7 @@ import { executeMcpAction, getAllTools, isMcpEnabled } from "../mcp/actions";
 import { extractMcpJson, isMcpJson } from "../mcp/utils";
 
 const localStorage = safeLocalStorage();
+const ACTIVE_COOKING_LOCKS = new Set<string>();
 // ==================== 专属大厨模式与 API 配置区 ====================
 
 // 1. Z-Image-Turbo 凭证配置
@@ -669,16 +670,25 @@ export const useChatStore = createPersistStore(
 
         // ============ 【线上全通用设计】第一关：线上全局通用记忆拦截 ============
         if (match && isChefMode) {
-          // 云端全局大统一：所有人或任意设备只要生成过这道菜，就可被瞬间通杀击中
           const isRequestingCustom = !!inlinePreference || !!userPassword;
           if (!isRequestingCustom) {
-            const globalCloudMemory = await cloudDBGet(
-              `chef:dish:${cleanContent.toLowerCase().trim()}`,
-            );
-            if (globalCloudMemory) {
-              console.log(
-                `[Chef Cloud] ⚡ 线上云端数据库成功击中 【${cleanContent}】 的通用厨房记忆！`,
+            const dishKey = `chef:dish:${cleanContent.toLowerCase().trim()}`;
+
+            // 🛑 【核心防御 1】：如果本地正有相同菜品的请求在“画图/做菜”，立刻在前端硬熔断！
+            if (ACTIVE_COOKING_LOCKS.has(dishKey)) {
+              showToast(
+                "🧑‍🍳 主厨提示：这道菜正在为您精心烹饪与摆盘中，请勿重复下单，请稍候！",
               );
+              return;
+            }
+
+            // 🌐 开始读取云端
+            showToast("🔍 正在检索线上公共厨房记忆库...");
+            const globalCloudMemory = await cloudDBGet(dishKey);
+
+            if (globalCloudMemory) {
+              // ✨ 可视化诊断：如果成功拦截，直接在屏幕弹窗提示用户！
+              showToast("⚡ 成功击中厨房通用记忆！瞬间为您呈上成品菜谱！");
 
               const memoMessage = createMessage({
                 role: "assistant",
@@ -695,12 +705,18 @@ export const useChatStore = createPersistStore(
                 ]);
               });
               get().onNewMessage(memoMessage, session);
-              const dishKey = `chef:dish:${cleanContent.toLowerCase().trim()}`;
-              // 只要被任意用户再次点中，公共菜谱记忆立刻重新刷新 30 天寿命（30 * 86400 秒）
+
               cloudDBExpire(dishKey, 2592000);
-              return; // 强行熔断后续大模型和生图请求，极度省钱、全网通用！
+              return; // 强行熔断
+            } else {
+              // 🧪 诊断提示：云端未命中（可能是第一次生成，或者是网络不通）
+              showToast("⏳ 云端未命中或读取异常，主厨开始现场为您研发新菜...");
             }
           }
+        }
+        const currentDishKey = `chef:dish:${cleanContent.toLowerCase().trim()}`;
+        if (isChefMode && !inlinePreference && !userPassword) {
+          ACTIVE_COOKING_LOCKS.add(currentDishKey);
         }
         // ===================================================================
 
@@ -867,6 +883,10 @@ export const useChatStore = createPersistStore(
                           .toLowerCase()
                           .trim()}`;
                         await cloudDBSet(dishKey, botMessage.content);
+                        ACTIVE_COOKING_LOCKS.delete(dishKey); // 🔓 解锁
+                        showToast(
+                          "💾 菜品效果图已拍摄完毕，通用记忆已安全落盘！",
+                        );
                         // ===============================================
                       }
                       get().updateTargetSession(session, (s) => {
@@ -875,6 +895,8 @@ export const useChatStore = createPersistStore(
                     })
                     .catch((err) => {
                       console.error("[Chef Mode] 生图失败: ", err);
+                      ACTIVE_COOKING_LOCKS.delete(currentDishKey);
+                      showToast("❌ 美食效果图拍摄失败！锁已释放。");
                       if (typeof botMessage.content === "string") {
                         botMessage.content = botMessage.content.replace(
                           loadingText,
@@ -907,6 +929,11 @@ export const useChatStore = createPersistStore(
             });
           },
           onError(error) {
+            if (isChefMode) {
+              ACTIVE_COOKING_LOCKS.delete(
+                `chef:dish:${cleanContent.toLowerCase().trim()}`,
+              ); // 🔓 报错解锁
+            }
             const isAborted = error.message?.includes?.("aborted");
             botMessage.content +=
               "\n\n" +
