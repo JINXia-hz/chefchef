@@ -197,7 +197,7 @@ async function cloudDBGet(key: string): Promise<string | null> {
     "gQAAAAAAATcAAAIgcDIzNzUwOGYwYjNhMTQ0NTc2OTVkMjU4NGNjZDlmMmIxZAN";
 
   try {
-    const safeKey = await sha256Key(key); // 转换为全英文哈希
+    const safeKey = await sha256Key(key);
     const localProxyUrl = `/api/upstash/get/${safeKey}?endpoint=${encodeURIComponent(
       endpoint,
     )}`;
@@ -207,6 +207,7 @@ async function cloudDBGet(key: string): Promise<string | null> {
       headers: {
         Authorization: `Bearer ${token}`,
       },
+      cache: "no-store", // 🛑 核心修复 3：禁止浏览器偷偷走磁盘缓存
     });
 
     if (!res.ok) return null;
@@ -219,7 +220,15 @@ async function cloudDBGet(key: string): Promise<string | null> {
 
     if (json.result) {
       console.log(`[Chef Cloud] 🔍 成功命中厨房通用记忆库！原始键名: [${key}]`);
-      return json.result; // 返回缓存的完整 Markdown 文本
+
+      // 🛑 核心修复 4：消除存入时 JSON.stringify 带来的多余双引号
+      try {
+        const parsed = JSON.parse(json.result);
+        if (typeof parsed === "string") return parsed;
+      } catch (e) {
+        // 如果 parse 失败，说明本身就是正常文本，跳过
+      }
+      return json.result;
     }
     return null;
   } catch (e) {

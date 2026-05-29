@@ -10,7 +10,6 @@ async function handle(
   if (req.method === "OPTIONS") {
     return NextResponse.json({ body: "OK" }, { status: 200 });
   }
-  const [...key] = params.key;
 
   if (!endpoint || !new URL(endpoint).hostname.endsWith(".upstash.io")) {
     return NextResponse.json(
@@ -29,23 +28,25 @@ async function handle(
     );
   }
 
+  // 完美拼装目标路径，params.key.join("/") 会把 [hash, "EX", "604800"] 还原为 hash/EX/604800
   const targetUrl = `${endpoint}/${params.action}/${params.key.join("/")}`;
   const method = req.method;
   const shouldNotHaveBody = ["get", "head"].includes(
     method?.toLowerCase() ?? "",
   );
 
-  // 🛑 【核心修正】：绝对不能直接转发 req.body 流！必须将其转为 ArrayBuffer 缓存
-  // 这样转发时 fetch 会自动追加精准的 Content-Length，彻底修复 Upstash 接收 chunked 流导致空写的问题
-  const bodyData = shouldNotHaveBody ? null : await req.arrayBuffer();
+  // 🛑 核心修正：从请求中提前榨出纯文本，拒绝转发 ReadableStream 流，fetch 会自动追加精准的 Content-Length
+  const bodyData = shouldNotHaveBody ? null : await req.text();
 
+  // 🛑 核心修复 1：绝对禁止 Next.js 缓存此 Fetch 请求！
   const fetchOptions: RequestInit = {
     headers: {
       authorization: req.headers.get("authorization") ?? "",
-      "content-type": req.headers.get("content-type") ?? "text/plain", // 保持文本格式
+      "content-type": req.headers.get("content-type") ?? "text/plain",
     },
     body: bodyData,
     method,
+    cache: "no-store", // <-- 新增这一行
   };
 
   console.log("[Upstash Proxy Forward]", targetUrl, {
@@ -54,7 +55,16 @@ async function handle(
   });
   const fetchResult = await fetch(targetUrl, fetchOptions);
 
-  return fetchResult;
+  // 🛑 核心修复 2：拦截响应，抹除 content-encoding，避免浏览器二次解压报错，并增加强力无缓存头
+  const newHeaders = new Headers(fetchResult.headers);
+  newHeaders.delete("content-encoding");
+  newHeaders.set("Cache-Control", "no-store, no-cache, must-revalidate");
+
+  return new Response(fetchResult.body, {
+    status: fetchResult.status,
+    statusText: fetchResult.statusText,
+    headers: newHeaders,
+  });
 }
 
 export const POST = handle;
